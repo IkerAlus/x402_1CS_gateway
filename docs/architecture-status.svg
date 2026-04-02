@@ -1,0 +1,209 @@
+<svg width="100%" viewBox="0 0 780 720" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <!-- Hatching for not-yet-built -->
+    <pattern id="hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="6" stroke="rgba(255,255,255,0.08)" stroke-width="2"/>
+    </pattern>
+  </defs>
+
+  <style>
+    text { font-family: -apple-system, "Segoe UI", sans-serif; fill: #e0e0e0; }
+    .title { font-size: 18px; font-weight: 600; fill: #fff; }
+    .subtitle { font-size: 11px; fill: #aaa; }
+    .label { font-size: 13px; font-weight: 500; }
+    .label-sm { font-size: 11px; font-weight: 400; }
+    .phase-label { font-size: 12px; font-weight: 600; fill: #888; letter-spacing: 1px; }
+    .done { fill: #1a6b3c; stroke: #4caf50; }
+    .done-text { fill: #a5d6a7; }
+    .pending { fill: #1a1a2e; stroke: #555; stroke-dasharray: 4,3; }
+    .pending-text { fill: #888; }
+    .active { fill: #0c447c; stroke: #64b5f6; }
+    .active-text { fill: #b5d4f4; }
+    .external { fill: #444; stroke: #999; }
+    .ext-text { fill: #ccc; }
+    .arrow-done { stroke: #4caf50; stroke-width: 1.5; }
+    .arrow-pending { stroke: #666; stroke-width: 1.5; stroke-dasharray: 4,3; }
+    .arrow-ext { stroke: #999; stroke-width: 1.5; }
+    .badge { font-size: 9px; font-weight: 700; }
+  </style>
+
+  <!-- Background -->
+  <rect width="780" height="720" rx="12" fill="#111118"/>
+
+  <!-- Title -->
+  <text x="390" y="32" text-anchor="middle" class="title">x402-1CS Gateway — Architecture &amp; Implementation Status</text>
+  <text x="390" y="50" text-anchor="middle" class="subtitle">Green = implemented &amp; tested · Blue = in progress · Dashed = not yet built</text>
+
+  <!-- Legend -->
+  <rect x="30" y="62" width="14" height="14" rx="3" class="done" stroke-width="1.5"/>
+  <text x="50" y="74" class="label-sm done-text">Done (58 tests)</text>
+  <rect x="170" y="62" width="14" height="14" rx="3" class="pending" stroke-width="1.5"/>
+  <text x="190" y="74" class="label-sm pending-text">Not yet built</text>
+
+  <!-- ═══════ EXTERNAL: Buyer (top-left) ═══════ -->
+  <rect x="30" y="95" width="150" height="50" rx="8" class="external" stroke-width="1"/>
+  <text x="105" y="117" text-anchor="middle" class="label ext-text">Buyer / Client</text>
+  <text x="105" y="133" text-anchor="middle" class="label-sm" style="fill:#999">EVM wallet + x402 SDK</text>
+
+  <!-- ═══════ EXTERNAL: EVM Chain (top-right) ═══════ -->
+  <rect x="600" y="95" width="150" height="50" rx="8" class="external" stroke-width="1"/>
+  <text x="675" y="117" text-anchor="middle" class="label ext-text">Origin EVM Chain</text>
+  <text x="675" y="133" text-anchor="middle" class="label-sm" style="fill:#999">Base, Arbitrum, etc.</text>
+
+  <!-- ═══════ EXTERNAL: 1CS API (bottom-right) ═══════ -->
+  <rect x="600" y="590" width="150" height="50" rx="8" class="external" stroke-width="1"/>
+  <text x="675" y="612" text-anchor="middle" class="label ext-text">1CS API</text>
+  <text x="675" y="628" text-anchor="middle" class="label-sm" style="fill:#999">NEAR Intents</text>
+
+  <!-- ═══════════════════════════════════════════════════ -->
+  <!-- GATEWAY CONTAINER                                   -->
+  <!-- ═══════════════════════════════════════════════════ -->
+  <rect x="30" y="165" width="720" height="405" rx="16" fill="#1a1a30" stroke="#6c63ff" stroke-width="1"/>
+  <text x="390" y="188" text-anchor="middle" class="label" style="fill:#b0acf0; font-size:14px; font-weight:600">x402-1CS Gateway</text>
+
+  <!-- ── PHASE 0 (done) ─────────────────────── -->
+  <text x="55" y="215" class="phase-label" style="fill:#4caf50">PHASE 0 — SCAFFOLDING</text>
+
+  <!-- Config -->
+  <rect x="50" y="225" width="130" height="46" rx="7" class="done" stroke-width="1.5"/>
+  <text x="115" y="245" text-anchor="middle" class="label done-text">Config</text>
+  <text x="115" y="261" text-anchor="middle" class="badge done-text">src/config.ts ✓</text>
+
+  <!-- Types -->
+  <rect x="200" y="225" width="130" height="46" rx="7" class="done" stroke-width="1.5"/>
+  <text x="265" y="245" text-anchor="middle" class="label done-text">Types</text>
+  <text x="265" y="261" text-anchor="middle" class="badge done-text">src/types.ts ✓</text>
+
+  <!-- Index / Entry -->
+  <rect x="350" y="225" width="130" height="46" rx="7" class="done" stroke-width="1.5"/>
+  <text x="415" y="245" text-anchor="middle" class="label done-text">Entry Point</text>
+  <text x="415" y="261" text-anchor="middle" class="badge done-text">src/index.ts ✓</text>
+
+  <!-- ── PHASE 1 (partial) ────────────────────── -->
+  <text x="55" y="300" class="phase-label" style="fill:#64b5f6">PHASE 1 — CORE MODULES</text>
+
+  <!-- State Store -->
+  <rect x="50" y="310" width="145" height="55" rx="7" class="pending" stroke-width="1.5"/>
+  <rect x="50" y="310" width="145" height="55" rx="7" fill="url(#hatch)"/>
+  <text x="122" y="333" text-anchor="middle" class="label pending-text">State Store</text>
+  <text x="122" y="350" text-anchor="middle" class="badge pending-text">Step 1.1 — src/store.ts</text>
+
+  <!-- Quote Engine (DONE) -->
+  <rect x="215" y="310" width="145" height="55" rx="7" class="done" stroke-width="1.5"/>
+  <text x="287" y="333" text-anchor="middle" class="label done-text">Quote Engine</text>
+  <text x="287" y="350" text-anchor="middle" class="badge done-text">src/quote-engine.ts ✓</text>
+
+  <!-- Verifier -->
+  <rect x="380" y="310" width="145" height="55" rx="7" class="pending" stroke-width="1.5"/>
+  <rect x="380" y="310" width="145" height="55" rx="7" fill="url(#hatch)"/>
+  <text x="452" y="333" text-anchor="middle" class="label pending-text">Verifier</text>
+  <text x="452" y="350" text-anchor="middle" class="badge pending-text">Step 1.3 — src/verifier.ts</text>
+
+  <!-- Settler -->
+  <rect x="545" y="310" width="145" height="55" rx="7" class="pending" stroke-width="1.5"/>
+  <rect x="545" y="310" width="145" height="55" rx="7" fill="url(#hatch)"/>
+  <text x="617" y="333" text-anchor="middle" class="label pending-text">Settler</text>
+  <text x="617" y="350" text-anchor="middle" class="badge pending-text">Step 1.4 — src/settler.ts</text>
+
+  <!-- ── PHASE 2 ────────────────────────────── -->
+  <text x="55" y="400" class="phase-label">PHASE 2 — INTEGRATION</text>
+
+  <!-- Middleware -->
+  <rect x="50" y="410" width="210" height="55" rx="7" class="pending" stroke-width="1.5"/>
+  <rect x="50" y="410" width="210" height="55" rx="7" fill="url(#hatch)"/>
+  <text x="155" y="433" text-anchor="middle" class="label pending-text">Express Middleware</text>
+  <text x="155" y="450" text-anchor="middle" class="badge pending-text">Step 2.1 — src/middleware.ts</text>
+
+  <!-- Provider Pool -->
+  <rect x="280" y="410" width="180" height="55" rx="7" class="pending" stroke-width="1.5"/>
+  <rect x="280" y="410" width="180" height="55" rx="7" fill="url(#hatch)"/>
+  <text x="370" y="433" text-anchor="middle" class="label pending-text">RPC Provider Pool</text>
+  <text x="370" y="450" text-anchor="middle" class="badge pending-text">Step 2.2 — src/provider-pool.ts</text>
+
+  <!-- E2E Tests -->
+  <rect x="480" y="410" width="210" height="55" rx="7" class="pending" stroke-width="1.5"/>
+  <rect x="480" y="410" width="210" height="55" rx="7" fill="url(#hatch)"/>
+  <text x="585" y="433" text-anchor="middle" class="label pending-text">E2E Integration Tests</text>
+  <text x="585" y="450" text-anchor="middle" class="badge pending-text">Step 2.3 — test/e2e/</text>
+
+  <!-- ── PHASE 3 ────────────────────────────── -->
+  <text x="55" y="500" class="phase-label">PHASE 3 — PRODUCTION HARDENING</text>
+
+  <!-- Gas Mgmt -->
+  <rect x="50" y="510" width="125" height="42" rx="7" class="pending" stroke-width="1.5"/>
+  <rect x="50" y="510" width="125" height="42" rx="7" fill="url(#hatch)"/>
+  <text x="112" y="535" text-anchor="middle" class="label-sm pending-text">Gas Mgmt (3.1)</text>
+
+  <!-- Observability -->
+  <rect x="190" y="510" width="125" height="42" rx="7" class="pending" stroke-width="1.5"/>
+  <rect x="190" y="510" width="125" height="42" rx="7" fill="url(#hatch)"/>
+  <text x="252" y="535" text-anchor="middle" class="label-sm pending-text">Observability (3.2)</text>
+
+  <!-- Rate Limiting -->
+  <rect x="330" y="510" width="125" height="42" rx="7" class="pending" stroke-width="1.5"/>
+  <rect x="330" y="510" width="125" height="42" rx="7" fill="url(#hatch)"/>
+  <text x="392" y="535" text-anchor="middle" class="label-sm pending-text">Rate Limit (3.3)</text>
+
+  <!-- Refund Routing -->
+  <rect x="470" y="510" width="125" height="42" rx="7" class="pending" stroke-width="1.5"/>
+  <rect x="470" y="510" width="125" height="42" rx="7" fill="url(#hatch)"/>
+  <text x="532" y="535" text-anchor="middle" class="label-sm pending-text">Refund Route (3.4)</text>
+
+  <!-- Graceful Shutdown -->
+  <rect x="610" y="510" width="125" height="42" rx="7" class="pending" stroke-width="1.5"/>
+  <rect x="610" y="510" width="125" height="42" rx="7" fill="url(#hatch)"/>
+  <text x="672" y="535" text-anchor="middle" class="label-sm pending-text">Shutdown (3.5)</text>
+
+  <!-- ═══════ DATA FLOW ARROWS ═══════ -->
+
+  <!-- Buyer → Middleware -->
+  <line x1="105" y1="145" x2="155" y2="408" class="arrow-pending" marker-end="url(#arr)"/>
+  <text x="80" y="275" class="badge" style="fill:#888" transform="rotate(-75, 80, 275)">HTTP GET + PAYMENT-SIGNATURE</text>
+
+  <!-- Middleware → Quote Engine -->
+  <line x1="185" y1="465" x2="260" y2="367" class="arrow-pending" marker-end="url(#arr)"/>
+
+  <!-- Quote Engine → 1CS API -->
+  <line x1="340" y1="365" x2="598" y2="600" class="arrow-done" marker-end="url(#arr)" stroke-dasharray="none"/>
+  <text x="490" y="480" class="badge" style="fill:#4caf50" transform="rotate(28, 490, 480)">POST /v0/quote</text>
+
+  <!-- Middleware → Verifier -->
+  <line x1="230" y1="465" x2="420" y2="367" class="arrow-pending" marker-end="url(#arr)"/>
+
+  <!-- Verifier → EVM Chain (simulate) -->
+  <line x1="490" y1="310" x2="650" y2="147" class="arrow-pending" marker-end="url(#arr)"/>
+
+  <!-- Middleware → Settler -->
+  <line x1="260" y1="437" x2="543" y2="337" class="arrow-pending" marker-end="url(#arr)"/>
+
+  <!-- Settler → EVM Chain (broadcast) -->
+  <line x1="690" y1="310" x2="690" y2="147" class="arrow-pending" marker-end="url(#arr)"/>
+  <text x="698" y="230" class="badge pending-text" transform="rotate(-90, 698, 230)">broadcast tx</text>
+
+  <!-- Settler → 1CS (poll) -->
+  <line x1="617" y1="367" x2="650" y2="588" class="arrow-pending" marker-end="url(#arr)"/>
+  <text x="648" y="490" class="badge" style="fill:#888" transform="rotate(80, 648, 490)">poll status</text>
+
+  <!-- All modules → State Store -->
+  <line x1="215" y1="337" x2="197" y2="337" class="arrow-done" marker-end="url(#arr)" stroke-dasharray="none"/>
+  <line x1="380" y1="337" x2="197" y2="337" class="arrow-pending" marker-end="url(#arr)"/>
+
+  <!-- ═══════ PROGRESS BAR ═══════ -->
+  <rect x="30" y="660" width="720" height="40" rx="8" fill="#1a1a2e" stroke="#333" stroke-width="1"/>
+  <text x="390" y="676" text-anchor="middle" class="label-sm" style="fill:#aaa">Overall Progress</text>
+  <!-- track -->
+  <rect x="50" y="688" width="680" height="10" rx="5" fill="#2a2a3a"/>
+  <!-- Phase 0 done (25%) -->
+  <rect x="50" y="688" width="170" height="10" rx="5" fill="#4caf50"/>
+  <!-- Phase 1 partial (~6% for quote engine) -->
+  <rect x="220" y="688" width="40" height="10" fill="#4caf50"/>
+  <!-- labels -->
+  <text x="135" y="686" text-anchor="middle" class="badge" style="fill:#4caf50">Phase 0 ✓</text>
+  <text x="370" y="686" text-anchor="middle" class="badge" style="fill:#888">Phase 1</text>
+  <text x="525" y="686" text-anchor="middle" class="badge" style="fill:#555">Phase 2</text>
+  <text x="645" y="686" text-anchor="middle" class="badge" style="fill:#555">Phase 3</text>
+  <text x="720" y="686" text-anchor="middle" class="badge" style="fill:#444">P4</text>
+</svg>

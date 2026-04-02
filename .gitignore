@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.test
+*.log
+coverage/
+.DS_Store
+
+# Vitest cache / compiled config
+vitest.config.ts.timestamp-*

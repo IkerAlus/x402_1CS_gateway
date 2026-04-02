@@ -119,7 +119,7 @@ For a real end-to-end payment, replace the facilitator key and refund address wi
 # .env — full payment testing
 ONE_CLICK_JWT=your-real-jwt-token
 MERCHANT_RECIPIENT=your-merchant.near
-MERCHANT_ASSET_OUT=nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1
+MERCHANT_ASSET_OUT=destination-asset-id-near-intents-format
 MERCHANT_AMOUNT_OUT=1000000
 
 ORIGIN_NETWORK=eip155:8453

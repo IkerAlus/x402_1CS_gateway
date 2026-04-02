@@ -1,2 +1,2 @@
 # x402_1CS_gateway
-This repo contains an implementation of a x402 compliant gateway for 1 Click Swap API. An Express server that implements the x402 HTTP payment protocol, translating standard x402 "pay for a resource" EVM flows into cross-chain swaps via the NEAR Intents 1Click Swap API
+x402-1CS Gateway is an Express server that implements the x402 HTTP payment protocol, translating standard x402 "pay for a resource" flows into cross-chain swaps via the NEAR Intents 1Click Swap API. A buyer on an EVM chain (Base) pays USDC, the gateway handles signature verification, on-chain broadcast, and 1CS swap orchestration, and the merchant receives the amount of the required token in the designated chain.

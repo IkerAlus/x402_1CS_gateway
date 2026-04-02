@@ -33,6 +33,7 @@ x402_1CS_gateway/
 ├── docs/
 │   ├── DEPLOYMENT_GUIDE.md    # This file
 │   ├── USER_GUIDE.md          # Buyer-facing usage guide
+│   ├── FACILITATOR_GUIDE.md   # Facilitator guide for key management
 │   ├── TEST_RESULTS.md        # Latest test run results
 │   ├── verifier-flow.svg
 ├── .env.example               # Environment variable template
@@ -136,6 +137,7 @@ TOKEN_NAME=USD Coin
 TOKEN_VERSION=2
 TOKEN_SUPPORTS_EIP3009=true
 ```
+Note: The facilitator handle private keys that authorize moving funds of users. Check in detail the [Facilitor Guide](docs/Facilitator_keys_guidance.md) for key management beforehand.
 
 ### Critical note: asset ID formats
 

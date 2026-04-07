@@ -840,16 +840,46 @@ async function failSwap(
 }
 
 /**
+ * Known chain prefixes used in 1CS OMFT-bridged NEP-141 asset IDs.
+ *
+ * Format: `nep141:<chain>-<tokenAddress>.omft.near`
+ * Example: `nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near`
+ *
+ * Each prefix maps to the canonical chain identifier used in the
+ * settlement response's `destinationChain` field.
+ */
+const NEP141_CHAIN_PREFIX_MAP: Record<string, string> = {
+  eth: "eip155:1",
+  base: "eip155:8453",
+  arb: "eip155:42161",
+  op: "eip155:10",
+  polygon: "eip155:137",
+  avax: "eip155:43114",
+  bsc: "eip155:56",
+  turbochain: "eip155:7897",
+};
+
+/**
  * Extract the destination chain from a 1CS asset ID.
  *
- * Handles both short-form and NEP-141 canonical formats:
- *   - "near:nUSDC"              → "near"
- *   - "nep141:usdc.near"        → "near"  (inferred from `.near` suffix)
- *   - "nep141:base-0x833...omft.near" → "near"
- *   - "eip155:8453"             → "eip155:8453"
+ * Handles short-form, CAIP-2, and NEP-141 canonical formats:
  *
- * For `nep141:` prefixed assets, the chain is inferred from the account name
- * (NEAR accounts end with `.near`). Falls back to the prefix before `:`.
+ * **Short-form:**
+ *   - `"near:nUSDC"`              → `"near"`
+ *   - `"ethereum:USDT"`           → `"ethereum"`
+ *   - `"base:USDC"`               → `"base"`
+ *
+ * **CAIP-2:**
+ *   - `"eip155:8453"`             → `"eip155:8453"`
+ *
+ * **NEP-141 bridged (OMFT):**
+ *   - `"nep141:base-0x833...omft.near"`  → `"eip155:8453"`
+ *   - `"nep141:arb-0xaf88...omft.near"`  → `"eip155:42161"`
+ *   - `"nep141:eth-0xa0b8...omft.near"`  → `"eip155:1"`
+ *
+ * **NEP-141 native NEAR:**
+ *   - `"nep141:usdc.near"`                           → `"near"`
+ *   - `"nep141:17208628f84f5d6ad33f0da3bbbeb27f..."` → `"near"`
  */
 export function extractDestinationChain(assetId: string): string {
   const colonIndex = assetId.indexOf(":");
@@ -858,12 +888,19 @@ export function extractDestinationChain(assetId: string): string {
   const prefix = assetId.substring(0, colonIndex);
   const rest = assetId.substring(colonIndex + 1);
 
-  // NEP-141 format: "nep141:<token-account>"
-  // The chain is inferred from the NEAR account suffix
   if (prefix === "nep141") {
+    // Check for OMFT-bridged EVM assets: "nep141:<chain>-<address>.omft.near"
+    // The chain prefix appears before the first hyphen.
+    const hyphenIndex = rest.indexOf("-");
+    if (hyphenIndex > 0) {
+      const chainPrefix = rest.substring(0, hyphenIndex);
+      const mapped = NEP141_CHAIN_PREFIX_MAP[chainPrefix];
+      if (mapped) return mapped;
+    }
+
+    // Native NEAR tokens: "nep141:usdc.near", "nep141:wrap.near", or hex IDs
     if (rest.endsWith(".near")) return "near";
     if (rest.endsWith(".testnet")) return "near-testnet";
-    // Fallback: assume NEAR for any nep141 asset
     return "near";
   }
 

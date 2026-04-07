@@ -14,6 +14,7 @@ import { settlePayment } from "../settler.js";
 import type { SwapState } from "../types.js";
 
 // Import all mocks from the centralized index
+import { extractDestinationChain } from "../settler.js";
 import {
   mockFastPollConfig,
   mockPaymentRequirements,
@@ -110,7 +111,9 @@ describe("Integration: full x402 flow with mocks", () => {
       expect(response.payer?.toLowerCase()).toBe(BUYER_ADDRESS.toLowerCase());
       expect(response.extra?.settlementType).toBe("crosschain-1cs");
       expect(response.extra?.swapStatus).toBe("SUCCESS");
-      expect(response.extra?.destinationChain).toBe("near");
+      expect(response.extra?.destinationChain).toBe(
+        extractDestinationChain(cfg.merchantAssetOut),
+      );
 
       // Final state should be SETTLED
       const settledState = await store.get(MOCK_DEPOSIT_ADDRESS);
@@ -159,6 +162,54 @@ describe("Integration: full x402 flow with mocks", () => {
 
       expect(verifyResult.valid).toBe(false);
       expect(verifyResult.error).toContain("Insufficient token balance");
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // EIP-3009 with EVM destination (Arbitrum)
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("EIP-3009 — EVM destination chain (Arbitrum)", () => {
+    it("should report correct destinationChain for Arbitrum USDC", async () => {
+      const arbCfg = mockFastPollConfig({
+        merchantAssetOut: "nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near",
+        merchantRecipient: "0xMerchantOnArbitrum",
+      });
+
+      const now = Date.now();
+      const state: SwapState = {
+        depositAddress: MOCK_DEPOSIT_ADDRESS,
+        quoteResponse: mockQuoteResponse(),
+        paymentRequirements: mockPaymentRequirements(),
+        phase: "QUOTED",
+        createdAt: now,
+        updatedAt: now,
+      };
+      await store.create(MOCK_DEPOSIT_ADDRESS, state);
+
+      const { payload } = await signEIP3009Payload(buyerWallet, {
+        to: MOCK_DEPOSIT_ADDRESS,
+      });
+
+      const chainReader = mockChainReader();
+      await verifyPayment(payload, store, chainReader, arbCfg, {
+        skipOnChainChecks: true,
+      });
+
+      const response = await settlePayment(
+        MOCK_DEPOSIT_ADDRESS,
+        store,
+        mockBroadcastFn(),
+        mockDepositNotifyFn(),
+        mockStatusPollFn(),
+        arbCfg,
+      );
+
+      expect(response.success).toBe(true);
+      expect(response.extra?.destinationChain).toBe("eip155:42161");
+      expect(response.extra?.destinationAsset).toBe(
+        "nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near",
+      );
     });
   });
 

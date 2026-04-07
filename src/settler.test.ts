@@ -855,7 +855,7 @@ describe("buildSettlementResponse", () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("extractDestinationChain", () => {
-  it("should extract chain from 1CS asset ID", () => {
+  it("should extract chain from short-form 1CS asset ID", () => {
     expect(extractDestinationChain("near:nUSDC")).toBe("near");
     expect(extractDestinationChain("ethereum:USDT")).toBe("ethereum");
     expect(extractDestinationChain("base:USDC")).toBe("base");
@@ -863,5 +863,47 @@ describe("extractDestinationChain", () => {
 
   it("should return full string if no colon", () => {
     expect(extractDestinationChain("near")).toBe("near");
+  });
+
+  it("should extract EVM chain from NEP-141 OMFT-bridged asset IDs", () => {
+    // Arbitrum USDC
+    expect(extractDestinationChain(
+      "nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near",
+    )).toBe("eip155:42161");
+    // Ethereum USDC
+    expect(extractDestinationChain(
+      "nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near",
+    )).toBe("eip155:1");
+    // Base USDC
+    expect(extractDestinationChain(
+      "nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near",
+    )).toBe("eip155:8453");
+    // Optimism
+    expect(extractDestinationChain(
+      "nep141:op-0x0b2c639c533813f4aa9d7837caf62653d097ff85.omft.near",
+    )).toBe("eip155:10");
+    // Polygon
+    expect(extractDestinationChain(
+      "nep141:polygon-0x3c499c542cef5e3811e1192ce70d8cc03d5c3359.omft.near",
+    )).toBe("eip155:137");
+  });
+
+  it("should return 'near' for native NEAR NEP-141 assets", () => {
+    // Native NEAR USDC (hex token account ID)
+    expect(extractDestinationChain(
+      "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+    )).toBe("near");
+    // Named NEAR token account
+    expect(extractDestinationChain("nep141:usdc.near")).toBe("near");
+    expect(extractDestinationChain("nep141:wrap.near")).toBe("near");
+  });
+
+  it("should return 'near-testnet' for testnet NEP-141 assets", () => {
+    expect(extractDestinationChain("nep141:usdc.testnet")).toBe("near-testnet");
+  });
+
+  it("should pass through CAIP-2 identifiers", () => {
+    expect(extractDestinationChain("eip155:8453")).toBe("eip155");
+    expect(extractDestinationChain("eip155:1")).toBe("eip155");
   });
 });

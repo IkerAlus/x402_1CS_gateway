@@ -89,6 +89,7 @@ export class SqliteStateStore implements StateStore {
   /**
    * Gracefully close the database, flushing any pending writes.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async close(): Promise<void> {
     if (this.saveTimer) {
       clearInterval(this.saveTimer);
@@ -109,6 +110,7 @@ export class SqliteStateStore implements StateStore {
    * Persist a new swap state. Idempotent — re-quoting the same deposit
    * address overwrites the previous state.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async create(depositAddress: string, state: SwapState): Promise<void> {
     const db = this.getDb();
     const serialized = JSON.stringify(state);
@@ -126,6 +128,7 @@ export class SqliteStateStore implements StateStore {
   /**
    * Retrieve a swap state by deposit address, or null if not found.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async get(depositAddress: string): Promise<SwapState | null> {
     const db = this.getDb();
 
@@ -190,6 +193,7 @@ export class SqliteStateStore implements StateStore {
    * List deposit addresses whose `createdAt` is older than the given
    * threshold (unix epoch ms). Used for background cleanup of stale states.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async listExpired(olderThanMs: number): Promise<string[]> {
     const db = this.getDb();
 
@@ -209,6 +213,7 @@ export class SqliteStateStore implements StateStore {
   /**
    * Delete a swap state by deposit address.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async delete(depositAddress: string): Promise<void> {
     const db = this.getDb();
 
@@ -227,6 +232,7 @@ export class SqliteStateStore implements StateStore {
    * Useful for Phase 3 operations like finding in-flight settlements
    * during graceful shutdown.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async listByPhase(phase: SwapPhase): Promise<SwapState[]> {
     const db = this.getDb();
 
@@ -249,6 +255,7 @@ export class SqliteStateStore implements StateStore {
    * Count of swap states grouped by phase.
    * Useful for health/metrics endpoints (Phase 3).
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async countByPhase(): Promise<Record<string, number>> {
     const db = this.getDb();
 
@@ -271,6 +278,7 @@ export class SqliteStateStore implements StateStore {
   /**
    * Total number of swap states in the store.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async count(): Promise<number> {
     const db = this.getDb();
     const results = db.exec("SELECT COUNT(*) FROM swap_states");
@@ -320,6 +328,7 @@ export class SqliteStateStore implements StateStore {
   private flushToDisk(): void {
     if (!this.db || !this.options.filePath) return;
     try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
       const fs = require("fs") as typeof import("fs");
       const data = this.db.export();
       fs.writeFileSync(this.options.filePath, Buffer.from(data));
@@ -363,16 +372,19 @@ export interface SqliteStoreOptions {
 export class InMemoryStateStore implements StateStore {
   private readonly states = new Map<string, SwapState>();
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async create(depositAddress: string, state: SwapState): Promise<void> {
     // Idempotent: overwrite if exists (same as SQLite INSERT OR REPLACE)
     this.states.set(depositAddress, structuredClone(state));
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async get(depositAddress: string): Promise<SwapState | null> {
     const state = this.states.get(depositAddress);
     return state ? structuredClone(state) : null;
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async update(depositAddress: string, patch: Partial<SwapState>): Promise<void> {
     const current = this.states.get(depositAddress);
     if (!current) {
@@ -393,6 +405,7 @@ export class InMemoryStateStore implements StateStore {
     this.states.set(depositAddress, updated);
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async listExpired(olderThanMs: number): Promise<string[]> {
     const expired: string[] = [];
     for (const [addr, state] of this.states) {
@@ -403,6 +416,7 @@ export class InMemoryStateStore implements StateStore {
     return expired;
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async delete(depositAddress: string): Promise<void> {
     this.states.delete(depositAddress);
   }
@@ -456,7 +470,7 @@ export async function createStateStore(
     }
     // Future: case "redis": { ... }
     default:
-      throw new Error(`Unknown state store backend: ${backend}`);
+      throw new Error(`Unknown state store backend: ${String(backend)}`);
   }
 }
 
@@ -489,7 +503,7 @@ export function validatePhaseTransition(
   newPhase: SwapPhase,
 ): void {
   const allowed = VALID_PHASE_TRANSITIONS.get(currentPhase);
-  if (!allowed || !allowed.has(newPhase)) {
+  if (!allowed?.has(newPhase)) {
     throw new InvalidPhaseTransitionError(
       `Invalid phase transition: ${currentPhase} → ${newPhase}`,
       currentPhase,

@@ -332,7 +332,7 @@ export async function settlePayment(
   try {
     configureOneClickSdk(cfg);
     await depositNotifyFn(broadcastResult.txHash, depositAddress);
-  } catch (err) {
+  } catch {
     // Non-fatal: 1CS may detect the deposit on its own via chain monitoring.
     // We log and continue to polling.
   }
@@ -391,7 +391,8 @@ async function broadcastTransaction(
   broadcastFn: BroadcastFn,
   options: SettlerOptions,
 ): Promise<BroadcastResult> {
-  const payload = paymentPayload.payload as unknown as ExactEvmPayloadV2;
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const payload: ExactEvmPayloadV2 = paymentPayload.payload as unknown as ExactEvmPayloadV2;
   const gasOptions: GasOptions = {
     gasBufferMultiplier: options.gasBufferMultiplier ?? 1.2,
   };
@@ -497,6 +498,7 @@ export async function pollUntilTerminal(
   const startTime = Date.now();
   let interval = cfg.pollIntervalBaseMs;
 
+  // eslint-disable-next-line no-constant-condition
   while (true) {
     // Check timeout
     const elapsed = Date.now() - startTime;
@@ -631,6 +633,7 @@ export function createBroadcastFn(
         gasOptions?.gasBufferMultiplier ?? 1.2,
       );
 
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       const tx = await contract.getFunction("transferWithAuthorization")(
         auth.from,
         auth.to,
@@ -645,11 +648,15 @@ export function createBroadcastFn(
       );
 
       // D-S2: Wait for confirmation
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
       const receipt = await tx.wait(confirmations);
 
       return {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         txHash: receipt.hash,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         blockNumber: receipt.blockNumber,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         gasUsed: receipt.gasUsed,
       };
     },
@@ -689,6 +696,7 @@ export function createBroadcastFn(
         gasOptions?.gasBufferMultiplier ?? 1.2,
       );
 
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       const tx = await proxy.getFunction("settle")(
         permit,
         owner,
@@ -698,11 +706,15 @@ export function createBroadcastFn(
       );
 
       // D-S2: Wait for confirmation
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
       const receipt = await tx.wait(confirmations);
 
       return {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         txHash: receipt.hash,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         blockNumber: receipt.blockNumber,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         gasUsed: receipt.gasUsed,
       };
     },
@@ -715,8 +727,9 @@ export function createBroadcastFn(
       const contract = new ethers.Contract(
         tokenAddress,
         eip3009ABI,
-        wallet.provider!,
+        wallet.provider,
       );
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       const result = await contract.getFunction("authorizationState")(authorizer, nonce);
       return Boolean(result);
     },
@@ -737,12 +750,15 @@ export function createBroadcastFn(
  */
 export function createDepositNotifyFn(): DepositNotifyFn {
   return async (txHash: string, depositAddress: string): Promise<DepositNotifyResult> => {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const response = await OneClickService.submitDepositTx({
       txHash,
       depositAddress,
     });
     return {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
       status: response.status,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
       correlationId: response.correlationId,
     };
   };
@@ -755,15 +771,23 @@ export function createDepositNotifyFn(): DepositNotifyFn {
  */
 export function createStatusPollFn(): StatusPollFn {
   return async (depositAddress: string): Promise<StatusPollResult> => {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const response = await OneClickService.getExecutionStatus(depositAddress);
     return {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       status: response.status as OneClickStatus,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment
       swapDetails: response.swapDetails
         ? {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             originChainTxHashes: response.swapDetails.originChainTxHashes,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             destinationChainTxHashes: response.swapDetails.destinationChainTxHashes,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             refundedAmount: response.swapDetails.refundedAmount,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             amountIn: response.swapDetails.amountIn,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             amountOut: response.swapDetails.amountOut,
           }
         : undefined,

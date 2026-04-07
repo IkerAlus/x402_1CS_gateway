@@ -53,7 +53,7 @@ export async function signPayment(
   } else if (method === "permit2") {
     return signPermit2(wallet, requirements, resourceUrl);
   } else {
-    throw new Error(`Unsupported asset transfer method: ${method}`);
+    throw new Error(`Unsupported asset transfer method: ${String(method)}`);
   }
 }
 

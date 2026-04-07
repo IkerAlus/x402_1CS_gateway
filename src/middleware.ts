@@ -115,13 +115,14 @@ export interface MiddlewareDeps {
  * @returns Express middleware function
  */
 export function createX402Middleware(deps: MiddlewareDeps): RequestHandler {
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  // eslint-disable-next-line @typescript-eslint/no-misused-promises
+  return (async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       await handleX402Request(req, res, next, deps);
     } catch (err) {
       handleError(res, err);
     }
-  };
+  }) as RequestHandler;
 }
 
 // ═══════════════════════════════════════════════════════════════════════

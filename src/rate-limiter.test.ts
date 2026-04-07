@@ -356,7 +356,7 @@ describe("Rate limiting middleware integration", () => {
 
   describe("quote rate limiting (429)", () => {
     it("returns 429 when quote rate limit is exceeded", async () => {
-      let clock = 1000;
+      const clock = 1000;
       const quoteLimiter = new QuoteRateLimiter(
         { maxRequests: 2, windowMs: 60_000 },
         { now: () => clock },
@@ -398,7 +398,7 @@ describe("Rate limiting middleware integration", () => {
     });
 
     it("does not rate-limit requests that carry a PAYMENT-SIGNATURE", async () => {
-      let clock = 1000;
+      const clock = 1000;
       const quoteLimiter = new QuoteRateLimiter(
         { maxRequests: 1, windowMs: 60_000 },
         { now: () => clock },

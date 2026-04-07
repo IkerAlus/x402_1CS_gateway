@@ -255,7 +255,7 @@ export class QuoteGarbageCollector {
    */
   start(intervalMs: number): void {
     if (this.timer) return; // Already running
-    this.timer = setInterval(() => this.sweep(), intervalMs);
+    this.timer = setInterval(() => { void this.sweep(); }, intervalMs);
     if (this.timer.unref) this.timer.unref();
   }
 

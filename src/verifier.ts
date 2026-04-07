@@ -192,7 +192,8 @@ export async function verifyPayment(
   }
 
   // ── 5. Decode and verify the signature ────────────────────────────
-  const payload = paymentPayload.payload as unknown as ExactEvmPayloadV2;
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const payload: ExactEvmPayloadV2 = paymentPayload.payload as unknown as ExactEvmPayloadV2;
 
   let result: VerifyResult;
   if (isEIP3009Payload(payload)) {
@@ -307,9 +308,10 @@ async function verifyEIP3009(
 
   // Reconstruct the EIP-712 domain for the token contract
   const chainId = extractChainId(requirements.network);
+  const extraRecord = requirements.extra as Record<string, unknown> | undefined;
   const domain: ethers.TypedDataDomain = {
-    name: (requirements.extra?.name as string) ?? cfg.tokenName,
-    version: (requirements.extra?.version as string) ?? cfg.tokenVersion,
+    name: (typeof extraRecord?.name === "string" ? extraRecord.name : undefined) ?? cfg.tokenName,
+    version: (typeof extraRecord?.version === "string" ? extraRecord.version : undefined) ?? cfg.tokenVersion,
     chainId,
     verifyingContract: requirements.asset,
   };
@@ -463,7 +465,7 @@ async function verifyPermit2(
   // The EIP-712 types for PermitWitnessTransferFrom (from @x402/evm)
   const types: Record<string, Array<{ name: string; type: string }>> = {};
   for (const [key, fields] of Object.entries(permit2WitnessTypes)) {
-    types[key] = fields.map((f: { name: string; type: string }) => ({
+    types[key] = (fields as unknown as Array<{ name: string; type: string }>).map((f) => ({
       name: f.name,
       type: f.type,
     }));
@@ -555,12 +557,12 @@ async function checkERC20Balance(
       "balanceOf",
       [ownerAddress],
     );
-    const balanceBn = BigInt(balance as string | number | bigint);
+    const balanceBn = BigInt(balance as bigint);
     if (balanceBn < requiredAmount) {
       return `Insufficient token balance: need ${requiredAmount.toString()}, have ${balanceBn.toString()}`;
     }
     return null;
-  } catch (err) {
+  } catch {
     // Non-fatal: log but don't reject the payment
     return null;
   }
@@ -584,12 +586,12 @@ async function checkPermit2Allowance(
       "allowance",
       [ownerAddress, PERMIT2_ADDRESS],
     );
-    const allowanceBn = BigInt(allowance as string | number | bigint);
+    const allowanceBn = BigInt(allowance as bigint);
     if (allowanceBn < requiredAmount) {
       return `Insufficient Permit2 allowance: need ${requiredAmount.toString()}, have ${allowanceBn.toString()}`;
     }
     return null;
-  } catch (err) {
+  } catch {
     // Non-fatal: Permit2 might use signature-based nonces instead of allowances
     return null;
   }
@@ -685,7 +687,9 @@ export function createChainReader(provider: ethers.Provider): ChainReader {
         abi as ethers.InterfaceAbi,
         provider,
       );
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       const fn = contract.getFunction(method);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
       return fn(...args);
     },
 

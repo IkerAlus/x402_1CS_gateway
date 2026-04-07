@@ -191,6 +191,7 @@ export class X402Client {
     payload: PaymentPayload,
   ): Promise<PaymentResult> {
     const url = `${this.gatewayUrl}${path}`;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
     const encoded = encodePaymentSignatureHeader(payload as any);
 
     const res = await this._fetch(url, {

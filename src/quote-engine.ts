@@ -329,6 +329,7 @@ export function toQuoteResponseRecord(qr: QuoteResponse): QuoteResponseRecord {
     timestamp: qr.timestamp,
     signature: qr.signature,
     // Store the full quoteRequest as a generic record for serialization
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     quoteRequest: qr.quoteRequest as unknown as Record<string, unknown>,
     quote: {
       depositAddress: qr.quote.depositAddress,

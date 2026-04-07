@@ -133,7 +133,7 @@ async function main(): Promise<void> {
 
   // ── 7. Start server ────────────────────────────────────────────────
   const port = parseInt(process.env.PORT ?? "3402", 10);
-  app.listen(port, () => {
+  const server = app.listen(port, () => {
     console.log("");
     console.log("═══════════════════════════════════════════════════════");
     console.log(`  x402-1CS Gateway running on http://localhost:${port}`);
@@ -149,14 +149,33 @@ async function main(): Promise<void> {
   });
 
   // ── Graceful shutdown ──────────────────────────────────────────────
-  const shutdown = () => {
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return; // Prevent double-shutdown on repeated Ctrl+C
+    shuttingDown = true;
+
     console.log("\n[x402-1CS] Shutting down...");
+
+    // 1. Stop accepting new HTTP connections
+    server.close();
+
+    // 2. Clean up background timers (rate limiter sweeps, quote GC)
     destroyRateLimiting(rateLimiting);
+
+    // 3. Close state store (clears saveTimer, flushes pending writes, closes DB)
+    await store.close();
+
+    // 4. Destroy RPC providers (close WebSocket/HTTP connections)
     providerPool.destroy();
-    process.exit(0);
+
+    console.log("[x402-1CS] Cleanup complete.");
+
+    // 5. Force exit after a brief grace period as a safety net
+    //    (in case in-flight settlements or other async work keeps the loop alive)
+    setTimeout(() => process.exit(0), 1000).unref();
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
 }
 
 main().catch((err) => {

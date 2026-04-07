@@ -230,6 +230,15 @@ async function main(): Promise<void> {
     const body = await paymentRes.text();
     console.log(`  Body: ${body}`);
 
+    // Decode PAYMENT-REQUIRED header to surface the verification error
+    const paymentRequiredRetryHeader = paymentRes.headers.get("payment-required");
+    if (paymentRequiredRetryHeader) {
+      const pr = decodeBase64<PaymentRequired>(paymentRequiredRetryHeader);
+      if (pr.error) {
+        console.log(`  Verification error: ${pr.error}`);
+      }
+    }
+
     const paymentResponseHeader = paymentRes.headers.get("payment-response");
     if (paymentResponseHeader) {
       const paymentResponse = decodeBase64<Record<string, unknown>>(

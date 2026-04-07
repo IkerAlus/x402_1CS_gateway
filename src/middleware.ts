@@ -185,6 +185,7 @@ async function handleX402Request(
 
   // State not found → return fresh 402
   if (!state) {
+    console.warn(`[x402] State not found for deposit address: ${depositAddress} — returning fresh 402`);
     await returnPaymentRequired(req, res, deps);
     return;
   }
@@ -192,6 +193,7 @@ async function handleX402Request(
   // State expired → delete and return fresh 402
   const quoteDeadline = state.quoteResponse.quote.deadline;
   if (quoteDeadline && Date.now() > new Date(quoteDeadline).getTime()) {
+    console.warn(`[x402] Quote expired for ${depositAddress} (deadline: ${quoteDeadline}) — returning fresh 402`);
     await deps.store.delete(depositAddress);
     await returnPaymentRequired(req, res, deps);
     return;
@@ -223,6 +225,7 @@ async function handleX402Request(
 
   if (!verifyResult.valid) {
     // Verification failed → return 402 with error
+    console.warn(`[x402] Verification failed for ${depositAddress}: ${verifyResult.error}`);
     const { requirements } = await buildPaymentRequirements(
       deps.cfg,
       deps.store,

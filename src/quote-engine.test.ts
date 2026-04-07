@@ -73,7 +73,7 @@ function mockQuoteResponse(overrides?: Partial<QuoteResponse["quote"]>): QuoteRe
       deadline,
     },
     quote: {
-      depositAddress: "0xDeposit1234567890abcdef1234567890abcdef00",
+      depositAddress: "0xDEADBEEF1234567890abcdef1234567890abcdef",
       amountIn: "1050000",
       amountInFormatted: "1.05",
       amountInUsd: "1.05",
@@ -168,7 +168,7 @@ describe("buildPaymentRequirements", () => {
     expect(req.network).toBe("eip155:8453");
     expect(req.asset).toBe("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
     expect(req.amount).toBe("1050000"); // amountIn from the quote
-    expect(req.payTo).toBe("0xDeposit1234567890abcdef1234567890abcdef00");
+    expect(req.payTo).toBe("0xDEADBEEF1234567890abcdef1234567890abcdef");
     expect(req.maxTimeoutSeconds).toBeGreaterThan(0);
     expect(req.extra).toEqual({
       name: "USDC",
@@ -191,7 +191,7 @@ describe("buildPaymentRequirements", () => {
 
     const persisted = store.states.get(depositAddr)!;
     expect(persisted.phase).toBe("QUOTED");
-    expect(persisted.depositAddress).toBe("0xDeposit1234567890abcdef1234567890abcdef00");
+    expect(persisted.depositAddress).toBe("0xDEADBEEF1234567890abcdef1234567890abcdef");
     expect(persisted.quoteResponse.correlationId).toBe("corr-123");
     expect(persisted.paymentRequirements.scheme).toBe("exact");
     expect(persisted.createdAt).toBeGreaterThan(0);
@@ -454,7 +454,7 @@ describe("mapToPaymentRequirements", () => {
     expect(req.network).toBe("eip155:8453");
     expect(req.asset).toBe("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
     expect(req.amount).toBe("1050000");
-    expect(req.payTo).toBe("0xDeposit1234567890abcdef1234567890abcdef00");
+    expect(req.payTo).toBe("0xDEADBEEF1234567890abcdef1234567890abcdef");
     expect(req.maxTimeoutSeconds).toBeGreaterThan(0);
     expect(req.extra).toEqual({
       name: "USDC",
@@ -491,7 +491,7 @@ describe("toQuoteResponseRecord", () => {
 
     expect(record.correlationId).toBe("corr-123");
     expect(record.signature).toBe("mock-signature");
-    expect(record.quote.depositAddress).toBe("0xDeposit1234567890abcdef1234567890abcdef00");
+    expect(record.quote.depositAddress).toBe("0xDEADBEEF1234567890abcdef1234567890abcdef");
     expect(record.quote.amountIn).toBe("1050000");
     expect(record.quote.amountOut).toBe("1000000");
     expect(record.quote.timeEstimate).toBe(30);

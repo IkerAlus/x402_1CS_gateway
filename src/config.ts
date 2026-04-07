@@ -124,5 +124,56 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Gateway
       : undefined,
   };
 
-  return GatewayConfigSchema.parse(raw);
+  const config = GatewayConfigSchema.parse(raw);
+
+  // ── Cross-validate recipient format vs destination chain ──────────
+  validateRecipientFormat(config);
+
+  return config;
+}
+
+/**
+ * Known NEP-141 chain prefixes that map to EVM chains.
+ * When merchantAssetOut uses one of these, merchantRecipient should be an EVM address.
+ */
+const EVM_CHAIN_PREFIXES = ["eth", "base", "arb", "op", "polygon", "avax", "bsc", "turbochain"];
+
+/**
+ * Warn at startup if the merchantRecipient format doesn't match the destination chain.
+ *
+ * - EVM destination (e.g. nep141:eth-0x...omft.near) → recipient should start with 0x
+ * - NEAR destination (e.g. nep141:...usdc.near) → recipient should NOT start with 0x
+ *
+ * This is a warning, not an error, because 1CS may support mixed formats in the future.
+ */
+function validateRecipientFormat(cfg: GatewayConfig): void {
+  const asset = cfg.merchantAssetOut;
+  const recipient = cfg.merchantRecipient;
+
+  // Check if this is a NEP-141 OMFT-bridged asset (has chain prefix before hyphen)
+  const isEvmDestination = EVM_CHAIN_PREFIXES.some((prefix) => {
+    // Match patterns like "nep141:eth-0x..." or "nep141:arb-0x..."
+    return asset.startsWith(`nep141:${prefix}-`) || asset.startsWith(`${prefix}-`);
+  });
+
+  const isEvmRecipient = /^0x[a-fA-F0-9]{40}$/i.test(recipient);
+
+  if (isEvmDestination && !isEvmRecipient) {
+    console.warn(
+      `[x402] ⚠️  MERCHANT_RECIPIENT "${recipient}" does not look like an EVM address, ` +
+      `but MERCHANT_ASSET_OUT "${asset}" targets an EVM chain. ` +
+      `The 1CS API may reject this or produce unexpected results. ` +
+      `Expected a 0x-prefixed address (e.g. 0x1234...abcd).`,
+    );
+  }
+
+  // Check for NEAR native destination with EVM recipient
+  const isNearNative = asset.includes(".near") && !isEvmDestination;
+  if (isNearNative && isEvmRecipient) {
+    console.warn(
+      `[x402] ⚠️  MERCHANT_RECIPIENT "${recipient}" looks like an EVM address, ` +
+      `but MERCHANT_ASSET_OUT "${asset}" targets NEAR. ` +
+      `Expected a NEAR account name (e.g. merchant.near).`,
+    );
+  }
 }

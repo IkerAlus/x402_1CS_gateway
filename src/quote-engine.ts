@@ -98,6 +98,19 @@ export async function buildPaymentRequirements(
       "1CS quote response missing depositAddress",
     );
   }
+  if (!/^0x[a-fA-F0-9]{40}$/.test(depositAddress)) {
+    throw new QuoteUnavailableError(
+      `1CS quote returned invalid depositAddress: "${depositAddress}"`,
+    );
+  }
+
+  // Validate amountIn is present and meaningful
+  const amountIn = quoteResponse.quote.amountIn;
+  if (!amountIn || amountIn === "0") {
+    throw new QuoteUnavailableError(
+      `1CS quote returned invalid amountIn: "${amountIn ?? "undefined"}"`,
+    );
+  }
 
   validateDeadline(quoteResponse, cfg);
 

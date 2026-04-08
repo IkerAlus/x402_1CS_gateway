@@ -6,7 +6,7 @@ This guide is for anyone with an EVM wallet (MetaMask, Rabby, a CLI wallet, or a
 
 ## What is this?
 
-The x402-1CS Gateway is an HTTP payment gateway that lets you pay for web resources using USDC on an EVM chain (currently Base). Under the hood, your payment is routed through the NEAR Intents 1Click Swap system, which delivers the funds to the merchant on a different chain (e.g., NEAR). You never need to interact with NEAR directly — you pay in USDC on Base and the gateway handles the rest.
+The x402-1CS Gateway is an HTTP payment gateway that lets you pay for web resources using USDC on an EVM chain (currently Base). Under the hood, your payment is routed through the NEAR Intents 1Click Swap system, which delivers the funds to the merchant on their configured destination chain — any of the 32+ chains supported by 1CS (EVM chains, NEAR, Solana, Stellar, Bitcoin, and more). You never need to interact with the destination chain directly — you pay in USDC on Base and the gateway handles the rest.
 
 The payment protocol is **x402** (version 2), an extension of the HTTP `402 Payment Required` status code. It uses standard HTTP headers and EIP-712 typed-data signatures, so it works with any EVM wallet that can sign structured data.
 

@@ -840,15 +840,23 @@ async function failSwap(
 }
 
 /**
- * Known chain prefixes used in 1CS OMFT-bridged NEP-141 asset IDs.
+ * Maps NEP-141 OMFT chain prefixes to canonical chain identifiers.
  *
  * Format: `nep141:<chain>-<tokenAddress>.omft.near`
  * Example: `nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near`
  *
- * Each prefix maps to the canonical chain identifier used in the
- * settlement response's `destinationChain` field.
+ * Uses CAIP-2 format (`eip155:<chainId>`) for EVM chains and descriptive
+ * identifiers (`<chain>:mainnet`) for non-EVM chains.
+ *
+ * This map covers all chains currently supported by the 1CS API.
+ * Unknown prefixes fall through to the raw prefix string (not `"near"`),
+ * so new chains added by 1CS work without code changes — they just
+ * report the raw prefix as the destination chain identifier.
+ *
+ * @see https://docs.near-intents.org/resources/asset-support
  */
 const NEP141_CHAIN_PREFIX_MAP: Record<string, string> = {
+  // EVM chains
   eth: "eip155:1",
   base: "eip155:8453",
   arb: "eip155:42161",
@@ -857,6 +865,29 @@ const NEP141_CHAIN_PREFIX_MAP: Record<string, string> = {
   avax: "eip155:43114",
   bsc: "eip155:56",
   turbochain: "eip155:7897",
+  gnosis: "eip155:100",
+  scroll: "eip155:534352",
+  xlayer: "eip155:196",
+  berachain: "eip155:80094",
+  monad: "eip155:143",
+  plasma: "eip155:27",
+  // Non-EVM chains
+  solana: "solana:mainnet",
+  bitcoin: "bitcoin:mainnet",
+  litecoin: "litecoin:mainnet",
+  dogecoin: "dogecoin:mainnet",
+  stellar: "stellar:pubnet",
+  xrp: "xrp:mainnet",
+  ton: "ton:mainnet",
+  tron: "tron:mainnet",
+  aptos: "aptos:mainnet",
+  sui: "sui:mainnet",
+  starknet: "starknet:mainnet",
+  aleo: "aleo:mainnet",
+  cardano: "cardano:mainnet",
+  dash: "dash:mainnet",
+  zcash: "zcash:mainnet",
+  bch: "bch:mainnet",
 };
 
 /**
@@ -872,10 +903,18 @@ const NEP141_CHAIN_PREFIX_MAP: Record<string, string> = {
  * **CAIP-2:**
  *   - `"eip155:8453"`             → `"eip155:8453"`
  *
- * **NEP-141 bridged (OMFT):**
+ * **NEP-141 bridged (OMFT) — EVM:**
  *   - `"nep141:base-0x833...omft.near"`  → `"eip155:8453"`
  *   - `"nep141:arb-0xaf88...omft.near"`  → `"eip155:42161"`
  *   - `"nep141:eth-0xa0b8...omft.near"`  → `"eip155:1"`
+ *
+ * **NEP-141 bridged (OMFT) — non-EVM:**
+ *   - `"nep141:solana-SPL...omft.near"`    → `"solana:mainnet"`
+ *   - `"nep141:stellar-GAXYZ...omft.near"` → `"stellar:pubnet"`
+ *   - `"nep141:bitcoin-bc1q...omft.near"`  → `"bitcoin:mainnet"`
+ *
+ * **NEP-141 bridged — unknown prefix (graceful degradation):**
+ *   - `"nep141:futurechain-0xabc...omft.near"` → `"futurechain"`
  *
  * **NEP-141 native NEAR:**
  *   - `"nep141:usdc.near"`                           → `"near"`
@@ -889,13 +928,16 @@ export function extractDestinationChain(assetId: string): string {
   const rest = assetId.substring(colonIndex + 1);
 
   if (prefix === "nep141") {
-    // Check for OMFT-bridged EVM assets: "nep141:<chain>-<address>.omft.near"
+    // Check for OMFT-bridged assets: "nep141:<chain>-<address>.omft.near"
     // The chain prefix appears before the first hyphen.
     const hyphenIndex = rest.indexOf("-");
     if (hyphenIndex > 0) {
       const chainPrefix = rest.substring(0, hyphenIndex);
       const mapped = NEP141_CHAIN_PREFIX_MAP[chainPrefix];
       if (mapped) return mapped;
+      // Unknown but clearly prefixed — return raw prefix so new 1CS chains
+      // work without code changes (just with less-pretty chain identifiers).
+      return chainPrefix;
     }
 
     // Native NEAR tokens: "nep141:usdc.near", "nep141:wrap.near", or hex IDs

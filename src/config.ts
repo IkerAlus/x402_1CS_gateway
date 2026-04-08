@@ -135,14 +135,30 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Gateway
 /**
  * Known NEP-141 chain prefixes that map to EVM chains.
  * When merchantAssetOut uses one of these, merchantRecipient should be an EVM address.
+ *
+ * @see https://docs.near-intents.org/resources/asset-support
  */
-const EVM_CHAIN_PREFIXES = ["eth", "base", "arb", "op", "polygon", "avax", "bsc", "turbochain"];
+const EVM_CHAIN_PREFIXES = [
+  "eth", "base", "arb", "op", "polygon", "avax", "bsc", "turbochain",
+  "gnosis", "scroll", "xlayer", "berachain", "monad", "plasma",
+];
+
+/**
+ * Known NEP-141 chain prefixes for non-EVM chains.
+ * Recipient format varies by chain (Stellar addresses, Solana pubkeys, etc.).
+ */
+const NON_EVM_CHAIN_PREFIXES = [
+  "solana", "bitcoin", "litecoin", "dogecoin", "stellar", "xrp",
+  "ton", "tron", "aptos", "sui", "starknet", "aleo", "cardano",
+  "dash", "zcash", "bch",
+];
 
 /**
  * Warn at startup if the merchantRecipient format doesn't match the destination chain.
  *
- * - EVM destination (e.g. nep141:eth-0x...omft.near) → recipient should start with 0x
- * - NEAR destination (e.g. nep141:...usdc.near) → recipient should NOT start with 0x
+ * - EVM destination (e.g. nep141:eth-0x...omft.near) → recipient should be a 0x address
+ * - NEAR destination (e.g. nep141:...usdc.near) → recipient should be a NEAR account
+ * - Non-EVM destination (e.g. nep141:stellar-...) → recipient should NOT be a 0x address
  *
  * This is a warning, not an error, because 1CS may support mixed formats in the future.
  */
@@ -150,12 +166,10 @@ function validateRecipientFormat(cfg: GatewayConfig): void {
   const asset = cfg.merchantAssetOut;
   const recipient = cfg.merchantRecipient;
 
-  // Check if this is a NEP-141 OMFT-bridged asset (has chain prefix before hyphen)
-  const isEvmDestination = EVM_CHAIN_PREFIXES.some((prefix) => {
-    // Match patterns like "nep141:eth-0x..." or "nep141:arb-0x..."
-    return asset.startsWith(`nep141:${prefix}-`) || asset.startsWith(`${prefix}-`);
-  });
-
+  // Extract chain prefix from OMFT-bridged assets (nep141:<chain>-<address>.omft.near)
+  const chainPrefix = extractChainPrefix(asset);
+  const isEvmDestination = chainPrefix !== null && EVM_CHAIN_PREFIXES.includes(chainPrefix);
+  const isNonEvmDestination = chainPrefix !== null && NON_EVM_CHAIN_PREFIXES.includes(chainPrefix);
   const isEvmRecipient = /^0x[a-fA-F0-9]{40}$/i.test(recipient);
 
   if (isEvmDestination && !isEvmRecipient) {
@@ -167,8 +181,17 @@ function validateRecipientFormat(cfg: GatewayConfig): void {
     );
   }
 
+  if (isNonEvmDestination && isEvmRecipient) {
+    console.warn(
+      `[x402] ⚠️  MERCHANT_RECIPIENT "${recipient}" looks like an EVM address, ` +
+      `but MERCHANT_ASSET_OUT "${asset}" targets ${chainPrefix}. ` +
+      `Expected a ${chainPrefix}-native address format.`,
+    );
+  }
+
   // Check for NEAR native destination with EVM recipient
-  const isNearNative = asset.includes(".near") && !isEvmDestination;
+  const isNearNative = !isEvmDestination && !isNonEvmDestination &&
+    chainPrefix === null && asset.includes(".near");
   if (isNearNative && isEvmRecipient) {
     console.warn(
       `[x402] ⚠️  MERCHANT_RECIPIENT "${recipient}" looks like an EVM address, ` +
@@ -176,4 +199,27 @@ function validateRecipientFormat(cfg: GatewayConfig): void {
       `Expected a NEAR account name (e.g. merchant.near).`,
     );
   }
+
+  // Unknown chain prefix — we can't validate, just log info
+  if (chainPrefix !== null && !isEvmDestination && !isNonEvmDestination) {
+    console.info(
+      `[x402] ℹ️  MERCHANT_ASSET_OUT "${asset}" has chain prefix "${chainPrefix}" ` +
+      `which is not in the known chain list. The gateway will still process swaps ` +
+      `via the 1CS API, but cannot validate recipient format.`,
+    );
+  }
+}
+
+/**
+ * Extract the chain prefix from an OMFT-bridged NEP-141 asset ID.
+ * Returns null if the asset is not in OMFT format.
+ *
+ * Example: `"nep141:arb-0xaf88...omft.near"` → `"arb"`
+ */
+function extractChainPrefix(asset: string): string | null {
+  // Strip "nep141:" prefix if present
+  const body = asset.startsWith("nep141:") ? asset.substring(7) : asset;
+  const hyphenIndex = body.indexOf("-");
+  if (hyphenIndex <= 0) return null;
+  return body.substring(0, hyphenIndex);
 }

@@ -175,6 +175,8 @@ describe("Integration: full x402 flow with mocks", () => {
     ["Arbitrum", DESTINATION_PRESETS.arbitrum, "eip155:42161"],
     ["Ethereum", DESTINATION_PRESETS.ethereum, "eip155:1"],
     ["Polygon", DESTINATION_PRESETS.polygon, "eip155:137"],
+    ["Stellar (non-EVM)", DESTINATION_PRESETS.stellar, "stellar:pubnet"],
+    ["Solana (non-EVM)", DESTINATION_PRESETS.solana, "solana:mainnet"],
   ] as const)("EIP-3009 — %s destination", (_label, preset, expectedChain) => {
     it(`should report destinationChain = ${expectedChain}`, async () => {
       const destCfg = mockFastPollConfig(preset);

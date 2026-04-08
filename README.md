@@ -1,5 +1,5 @@
 # x402_1CS_gateway
-x402-1CS Gateway is an Express server that implements the x402 HTTP payment protocol, translating standard x402 "pay for a resource" flows into cross-chain swaps via the NEAR Intents 1Click Swap API. A buyer on an EVM chain (Base) pays USDC, the gateway handles signature verification, on-chain broadcast, and 1CS swap orchestration, and the merchant receives the amount of the required token in the designated chain.
+x402-1CS Gateway is an Express server that implements the x402 HTTP payment protocol, translating standard x402 "pay for a resource" flows into cross-chain swaps via the NEAR Intents 1Click Swap API. A buyer on an EVM chain (Base) pays USDC, the gateway handles signature verification, on-chain broadcast, and 1CS swap orchestration, and the merchant receives the required amount on any of the 32+ destination chains supported by the 1CS API (EVM chains, NEAR, Solana, Stellar, Bitcoin, and more).
 
 Token flow: Buyer → 1CS Deposit Address → cross-chain swap → Merchant
 
@@ -162,11 +162,14 @@ chmod +x scripts/test-1cs-quote.sh
 
 ### Merchant destination chains
 
-The merchant can receive on **any chain supported by the 1CS API**. The destination is configured via `MERCHANT_RECIPIENT` and `MERCHANT_ASSET_OUT`. The recipient format must match the destination chain:
+The merchant can receive on **any of the 32+ chains supported by the 1CS API**, including EVM chains (Ethereum, Arbitrum, Polygon, etc.), NEAR, and non-EVM chains (Solana, Stellar, Bitcoin, TON, and more). The destination is configured via `MERCHANT_RECIPIENT` and `MERCHANT_ASSET_OUT`. The recipient format must match the destination chain.
+
+For the full list of supported chains and assets, see: https://docs.near-intents.org/resources/asset-support
+
+**EVM destination examples:**
 
 | Destination | `MERCHANT_RECIPIENT` | `MERCHANT_ASSET_OUT` |
 |-------------|---------------------|---------------------|
-| **NEAR** | `merchant.near` | `nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1` |
 | **Ethereum** | `0xYourEthAddress` | `nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near` |
 | **Arbitrum** | `0xYourArbAddress` | `nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near` |
 | **Polygon** | `0xYourPolyAddress` | `nep141:polygon-0x3c499c542cef5e3811e1192ce70d8cc03d5c3359.omft.near` |
@@ -174,7 +177,16 @@ The merchant can receive on **any chain supported by the 1CS API**. The destinat
 | **Avalanche** | `0xYourAvaxAddress` | `nep141:avax-0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e.omft.near` |
 | **BSC** | `0xYourBscAddress` | `nep141:bsc-0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d.omft.near` |
 
-The gateway validates at startup that the recipient format matches the destination chain and warns if there's a mismatch (e.g., a NEAR account name with an EVM destination asset).
+**Non-EVM destination examples:**
+
+| Destination | `MERCHANT_RECIPIENT` | `MERCHANT_ASSET_OUT` |
+|-------------|---------------------|---------------------|
+| **NEAR** | `merchant.near` | `nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1` |
+| **Stellar** | Stellar address (G...) | `nep141:stellar-<token>.omft.near` |
+| **Solana** | Solana public key | `nep141:solana-<token>.omft.near` |
+| **Bitcoin** | Bitcoin address | `nep141:bitcoin-<token>.omft.near` |
+
+The gateway validates at startup that the recipient format matches the destination chain and warns if there's a mismatch. For chains not yet in the gateway's known chain list, it logs an informational message but still processes swaps normally — the 1CS API handles all cross-chain routing.
 
 ### Critical note: TOKEN_NAME
 
@@ -367,7 +379,7 @@ What happens step by step:
 6. USDC moves from buyer -> 1CS deposit address (on-chain, visible on Basescan)
 7. **Gateway notifies** 1CS via `POST /v0/deposit/submit`
 8. **Gateway polls** `GET /v0/status` every 2s with exponential backoff
-9. 1CS executes the cross-chain swap (Base USDC -> NEAR USDC)
+9. 1CS executes the cross-chain swap (Base USDC → merchant's destination chain)
 10. 1CS returns `SUCCESS` -> gateway responds with 200 + `PAYMENT-RESPONSE` header
 
 Expected output (after 30-60 seconds):
@@ -546,7 +558,7 @@ Run `scripts/test-1cs-quote.sh` to discover the correct asset IDs from the live 
 
 ### "MERCHANT_RECIPIENT does not look like an EVM address"
 
-This startup warning means `MERCHANT_ASSET_OUT` targets an EVM chain (e.g., Arbitrum, Ethereum) but `MERCHANT_RECIPIENT` is not an EVM address (0x...). Update `MERCHANT_RECIPIENT` to match the destination chain format. See the "Merchant destination chains" section above.
+This startup warning means `MERCHANT_ASSET_OUT` targets an EVM chain (e.g., Arbitrum, Ethereum) but `MERCHANT_RECIPIENT` is not an EVM address (0x...). Update `MERCHANT_RECIPIENT` to match the destination chain format. Similarly, if you see a warning about an EVM address targeting a non-EVM chain (Stellar, Solana, etc.), make sure the recipient format is correct for that chain. See the "Merchant destination chains" section above.
 
 ### "Signer mismatch: signature recovers to 0x..."
 

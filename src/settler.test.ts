@@ -843,8 +843,7 @@ describe("extractDestinationChain", () => {
   });
 
   it("should extract EVM chain from all mapped NEP-141 OMFT-bridged asset IDs", () => {
-    // All 8 entries in NEP141_CHAIN_PREFIX_MAP
-    const cases: [string, string][] = [
+    const evmCases: [string, string][] = [
       ["nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near", "eip155:1"],
       ["nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near", "eip155:8453"],
       ["nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near", "eip155:42161"],
@@ -853,18 +852,41 @@ describe("extractDestinationChain", () => {
       ["nep141:avax-0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e.omft.near", "eip155:43114"],
       ["nep141:bsc-0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d.omft.near", "eip155:56"],
       ["nep141:turbochain-0x1234567890abcdef1234567890abcdef12345678.omft.near", "eip155:7897"],
+      ["nep141:gnosis-0xddafbb505ad214d7b80b1f830fccc89b60fb7a83.omft.near", "eip155:100"],
+      ["nep141:scroll-0x06efdbff2a14a7c8e15944d1f4a48f9f95f663a4.omft.near", "eip155:534352"],
+      ["nep141:xlayer-0x74b7f16337b8972027f6196a17a631ac6de26d22.omft.near", "eip155:196"],
+      ["nep141:berachain-0x549943e04f40284185054145c6e4e9568c1f0572.omft.near", "eip155:80094"],
     ];
-    for (const [asset, expected] of cases) {
+    for (const [asset, expected] of evmCases) {
       expect(extractDestinationChain(asset)).toBe(expected);
     }
   });
 
-  it("should fall back to 'near' for unknown NEP-141 chain prefixes", () => {
-    // Unknown prefix with hyphen — no mapping exists, and the rest doesn't end in .near/.testnet
-    // so it falls through to the default "near" return
+  it("should extract non-EVM chain from all mapped NEP-141 OMFT-bridged asset IDs", () => {
+    const nonEvmCases: [string, string][] = [
+      ["nep141:solana-EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v.omft.near", "solana:mainnet"],
+      ["nep141:stellar-GAXYZ1234567890abcdef.omft.near", "stellar:pubnet"],
+      ["nep141:bitcoin-bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh.omft.near", "bitcoin:mainnet"],
+      ["nep141:ton-EQBynBO23ywHy_CgarY9NK9FTz0yDsG82PtcbSTQgGoXwiuA.omft.near", "ton:mainnet"],
+      ["nep141:tron-TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t.omft.near", "tron:mainnet"],
+      ["nep141:xrp-rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh.omft.near", "xrp:mainnet"],
+      ["nep141:aptos-0x1234567890abcdef.omft.near", "aptos:mainnet"],
+      ["nep141:sui-0x1234567890abcdef.omft.near", "sui:mainnet"],
+      ["nep141:dogecoin-DRjxno1HEAt9EF4qBKBR8gK9Pjc5Swktmq.omft.near", "dogecoin:mainnet"],
+    ];
+    for (const [asset, expected] of nonEvmCases) {
+      expect(extractDestinationChain(asset)).toBe(expected);
+    }
+  });
+
+  it("should return raw prefix for unknown NEP-141 chain prefixes (graceful degradation)", () => {
+    // Unknown prefix with hyphen — returns the raw prefix, not "near"
     expect(extractDestinationChain(
-      "nep141:solana-0xabcdef1234567890abcdef1234567890abcdef12.omft.near",
-    )).toBe("near");
+      "nep141:futurechain-0xabcdef1234567890abcdef.omft.near",
+    )).toBe("futurechain");
+    expect(extractDestinationChain(
+      "nep141:newl2-0x1234567890abcdef.omft.near",
+    )).toBe("newl2");
   });
 
   it("should return 'near' for native NEAR NEP-141 assets", () => {

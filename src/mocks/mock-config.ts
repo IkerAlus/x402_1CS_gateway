@@ -72,6 +72,15 @@ export const DESTINATION_PRESETS = {
     merchantRecipient: "0xfedcba9876543210fedcba9876543210fedcba98",
     merchantAssetOut: "nep141:polygon-0x3c499c542cef5e3811e1192ce70d8cc03d5c3359.omft.near",
   },
+  // Non-EVM destination presets
+  stellar: {
+    merchantRecipient: "GAXYZ1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF",
+    merchantAssetOut: "nep141:stellar-GAXYZ1234567890abcdef.omft.near",
+  },
+  solana: {
+    merchantRecipient: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    merchantAssetOut: "nep141:solana-EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v.omft.near",
+  },
 } as const;
 
 // ═══════════════════════════════════════════════════════════════════════

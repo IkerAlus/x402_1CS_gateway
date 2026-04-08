@@ -445,6 +445,8 @@ export interface StateStore {
   listExpired(olderThanMs: number): Promise<string[]>;
   /** Delete a swap state by deposit address. */
   delete(depositAddress: string): Promise<void>;
+  /** Gracefully close the store, flushing pending writes and releasing resources. */
+  close(): Promise<void>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════

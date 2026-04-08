@@ -430,6 +430,11 @@ export class InMemoryStateStore implements StateStore {
   clear(): void {
     this.states.clear();
   }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async close(): Promise<void> {
+    this.states.clear();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════

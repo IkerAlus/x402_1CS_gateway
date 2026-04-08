@@ -174,7 +174,7 @@ The response includes a `PAYMENT-RESPONSE` header with settlement details:
       "settlementType": "crosschain-1cs",
       "swapStatus": "SUCCESS",
       "destinationTxHashes": ["..."],
-      "destinationChain": "near",
+      "destinationChain": "near",   // Varies: "eip155:42161" for Arbitrum, "eip155:1" for ETH, etc.
       "destinationAmount": "1000000",
       "correlationId": "corr-..."
     }
@@ -437,8 +437,8 @@ Here's the exact fund flow:
 
 1. **You authorize** — Your wallet signs a gasless EIP-712 message. No tokens move yet.
 2. **Gateway broadcasts** — The facilitator wallet calls `transferWithAuthorization` on the USDC contract. Your USDC is transferred from your wallet to the 1CS deposit address. This is visible as a standard ERC-20 transfer on Basescan.
-3. **1CS executes the swap** — The 1Click Swap system picks up the deposit and executes a cross-chain swap (Base USDC -> NEAR USDC). This takes 20-60 seconds.
-4. **Merchant receives funds** — The merchant's NEAR account receives the agreed amount of USDC on NEAR.
+3. **1CS executes the swap** — The 1Click Swap system picks up the deposit and executes a cross-chain swap to the merchant's configured destination chain. This takes 20-60 seconds.
+4. **Merchant receives funds** — The merchant receives the agreed amount on their configured destination chain (NEAR, Arbitrum, Ethereum, etc.).
 5. **You receive the resource** — The gateway returns the protected content with a 200 response.
 
 If the swap fails for any reason, 1CS refunds the deposited USDC to the gateway's refund address. The gateway operator is responsible for forwarding refunds back to buyers (this is handled operationally in the current version).

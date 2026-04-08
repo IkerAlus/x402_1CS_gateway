@@ -28,8 +28,19 @@ export const MOCK_DEPOSIT_ADDRESS = "0x7a16fF8270133F063aAb6C9977183D9e72835428"
 /**
  * Build a realistic 1CS QuoteResponse (as stored in SwapState.quoteResponse).
  *
- * Represents an EXACT_OUTPUT quote: merchant wants 10 USDC on NEAR,
- * buyer pays ~10.50 USDC on Base (includes fee + slippage).
+ * Represents an EXACT_OUTPUT quote: merchant wants 10 USDC on the configured
+ * destination chain, buyer pays ~10.50 USDC on Base (includes fee + slippage).
+ *
+ * To test a different destination chain, override `quoteRequest`:
+ * ```typescript
+ * mockQuoteResponse({
+ *   quoteRequest: {
+ *     ...mockQuoteResponse().quoteRequest,
+ *     destinationAsset: DESTINATION_PRESETS.arbitrum.merchantAssetOut,
+ *     recipient: DESTINATION_PRESETS.arbitrum.merchantRecipient,
+ *   },
+ * });
+ * ```
  */
 export function mockQuoteResponse(
   overrides: Partial<QuoteResponseRecord> = {},
@@ -98,8 +109,18 @@ export function mockDepositNotifyResponse(
  *
  * In production, 1CS transitions: KNOWN_DEPOSIT_TX → PROCESSING → SUCCESS.
  * The buyer waits ~30s total.
+ *
+ * @param options.destinationTxHash — Override the destination chain tx hash.
+ * @param options.destinationExplorerUrl — Override the destination chain explorer URL
+ *   (defaults to nearblocks.io; use e.g. "https://arbiscan.io/tx/" for Arbitrum).
  */
-export function mockHappyPathStatusSequence(): StatusPollResult[] {
+export function mockHappyPathStatusSequence(options: {
+  destinationTxHash?: string;
+  destinationExplorerUrl?: string;
+} = {}): StatusPollResult[] {
+  const destHash = options.destinationTxHash ?? "9XzKqRuAfcE7vWsH3bJpNmD4yT8gFwCeL2xYnG5oU6k";
+  const destExplorerUrl = options.destinationExplorerUrl ?? `https://nearblocks.io/txns/${destHash}`;
+
   return [
     { status: "KNOWN_DEPOSIT_TX" },
     { status: "PROCESSING" },
@@ -114,8 +135,8 @@ export function mockHappyPathStatusSequence(): StatusPollResult[] {
         ],
         destinationChainTxHashes: [
           {
-            hash: "9XzKqRuAfcE7vWsH3bJpNmD4yT8gFwCeL2xYnG5oU6k",
-            explorerUrl: "https://nearblocks.io/txns/9XzKqRuAfcE7vWsH3bJpNmD4yT8gFwCeL2xYnG5oU6k",
+            hash: destHash,
+            explorerUrl: destExplorerUrl,
           },
         ],
         amountIn: "10500000",

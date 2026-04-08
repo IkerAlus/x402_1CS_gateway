@@ -1,5 +1,9 @@
 /**
- * Realistic GatewayConfig for testing — targets Base mainnet USDC.
+ * Realistic GatewayConfig for testing.
+ *
+ * **Origin (buyer) side:** Targets Base mainnet USDC — the primary supported origin chain.
+ * **Destination (merchant) side:** Defaults to NEAR USDC, but use {@link DESTINATION_PRESETS}
+ * to test any supported merchant destination chain.
  *
  * All values are plausible production settings, except the private keys
  * and JWT which are test-only.
@@ -9,7 +13,7 @@ import type { GatewayConfig } from "../config.js";
 import { FACILITATOR_PRIVATE_KEY, FACILITATOR_ADDRESS } from "./mock-wallets.js";
 
 // ═══════════════════════════════════════════════════════════════════════
-// Chain & token constants (Base mainnet USDC)
+// Origin chain & token constants (Base mainnet USDC)
 // ═══════════════════════════════════════════════════════════════════════
 
 /** CAIP-2 identifier for Base mainnet. */
@@ -37,11 +41,53 @@ export const ORIGIN_ASSET_IN = "nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bd
 export const MERCHANT_ASSET_OUT = "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
 
 // ═══════════════════════════════════════════════════════════════════════
+// Merchant destination chain presets
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Pre-built merchant destination configurations for testing different chains.
+ *
+ * Each preset contains the `merchantRecipient` and `merchantAssetOut` pair
+ * appropriate for that destination chain. Pass to `mockGatewayConfig()`:
+ *
+ * ```typescript
+ * const cfg = mockGatewayConfig(DESTINATION_PRESETS.arbitrum);
+ * const cfg = mockFastPollConfig(DESTINATION_PRESETS.ethereum);
+ * ```
+ */
+export const DESTINATION_PRESETS = {
+  near: {
+    merchantRecipient: "merchant.near",
+    merchantAssetOut: "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+  },
+  arbitrum: {
+    merchantRecipient: "0x1234567890abcdef1234567890abcdef12345678",
+    merchantAssetOut: "nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near",
+  },
+  ethereum: {
+    merchantRecipient: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+    merchantAssetOut: "nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near",
+  },
+  polygon: {
+    merchantRecipient: "0xfedcba9876543210fedcba9876543210fedcba98",
+    merchantAssetOut: "nep141:polygon-0x3c499c542cef5e3811e1192ce70d8cc03d5c3359.omft.near",
+  },
+} as const;
+
+// ═══════════════════════════════════════════════════════════════════════
 // Mock config
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
  * Build a complete mock GatewayConfig.
+ *
+ * Defaults to NEAR as the merchant destination. Use {@link DESTINATION_PRESETS}
+ * to test other destination chains:
+ *
+ * ```typescript
+ * mockGatewayConfig(DESTINATION_PRESETS.arbitrum)
+ * mockGatewayConfig({ ...DESTINATION_PRESETS.ethereum, merchantAmountOut: "5000000" })
+ * ```
  *
  * @param overrides — Partial fields to customize for a specific test.
  */

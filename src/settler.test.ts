@@ -19,8 +19,6 @@ import {
   type DepositNotifyResult,
   type StatusPollFn,
   type StatusPollResult,
-  type SettlerOptions,
-  type GasOptions,
 } from "./settler.js";
 import { InMemoryStateStore } from "./store.js";
 import type {
@@ -35,9 +33,9 @@ import {
   SwapFailedError,
   SwapTimeoutError,
   InsufficientGasError,
-  GatewayError,
 } from "./types.js";
 import type { GatewayConfig } from "./config.js";
+import { mockGatewayConfig, NETWORK, USDC_ADDRESS } from "./mocks/index.js";
 import type {
   ExactEIP3009Payload,
   ExactPermit2Payload,
@@ -48,35 +46,14 @@ import { x402ExactPermit2ProxyAddress } from "@x402/evm";
 // Test constants & helpers
 // ═══════════════════════════════════════════════════════════════════════
 
-const TEST_CHAIN_ID = 8453;
-const TEST_NETWORK = "eip155:8453";
-const TEST_TOKEN_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+const TEST_NETWORK = NETWORK;
+const TEST_TOKEN_ADDRESS = USDC_ADDRESS;
 const TEST_DEPOSIT_ADDRESS = "0x1234567890abcdef1234567890abcdef12345678";
 const TEST_SIGNER_ADDRESS = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TEST_TX_HASH = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
 function testConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
-  return {
-    oneClickJwt: "test-jwt",
-    oneClickBaseUrl: "https://1click.test",
-    merchantRecipient: "merchant.near",
-    merchantAssetOut: "near:nUSDC",
-    merchantAmountOut: "10000000",
-    originNetwork: TEST_NETWORK,
-    originAssetIn: "base:USDC",
-    originTokenAddress: TEST_TOKEN_ADDRESS,
-    originRpcUrls: ["https://rpc.test"],
-    facilitatorPrivateKey: "0x" + "ab".repeat(32),
-    gatewayRefundAddress: "0x" + "cd".repeat(20),
-    maxPollTimeMs: 300_000,
-    pollIntervalBaseMs: 2_000,
-    pollIntervalMaxMs: 30_000,
-    quoteExpiryBufferSec: 30,
-    tokenName: "USD Coin",
-    tokenVersion: "2",
-    tokenSupportsEip3009: true,
-    ...overrides,
-  };
+  return mockGatewayConfig(overrides);
 }
 
 function makeRequirements(
@@ -822,7 +799,7 @@ describe("buildSettlementResponse", () => {
     expect(response.extra!.settlementType).toBe("crosschain-1cs");
     expect(response.extra!.swapStatus).toBe("SUCCESS");
     expect(response.extra!.destinationChain).toBe("near");
-    expect(response.extra!.destinationAsset).toBe("near:nUSDC");
+    expect(response.extra!.destinationAsset).toBe(cfg.merchantAssetOut);
     expect(response.extra!.destinationAmount).toBe("10000000");
     expect(response.extra!.correlationId).toBe("corr-123");
     expect(response.extra!.destinationTxHashes).toEqual([
@@ -865,27 +842,29 @@ describe("extractDestinationChain", () => {
     expect(extractDestinationChain("near")).toBe("near");
   });
 
-  it("should extract EVM chain from NEP-141 OMFT-bridged asset IDs", () => {
-    // Arbitrum USDC
+  it("should extract EVM chain from all mapped NEP-141 OMFT-bridged asset IDs", () => {
+    // All 8 entries in NEP141_CHAIN_PREFIX_MAP
+    const cases: [string, string][] = [
+      ["nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near", "eip155:1"],
+      ["nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near", "eip155:8453"],
+      ["nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near", "eip155:42161"],
+      ["nep141:op-0x0b2c639c533813f4aa9d7837caf62653d097ff85.omft.near", "eip155:10"],
+      ["nep141:polygon-0x3c499c542cef5e3811e1192ce70d8cc03d5c3359.omft.near", "eip155:137"],
+      ["nep141:avax-0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e.omft.near", "eip155:43114"],
+      ["nep141:bsc-0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d.omft.near", "eip155:56"],
+      ["nep141:turbochain-0x1234567890abcdef1234567890abcdef12345678.omft.near", "eip155:7897"],
+    ];
+    for (const [asset, expected] of cases) {
+      expect(extractDestinationChain(asset)).toBe(expected);
+    }
+  });
+
+  it("should fall back to 'near' for unknown NEP-141 chain prefixes", () => {
+    // Unknown prefix with hyphen — no mapping exists, and the rest doesn't end in .near/.testnet
+    // so it falls through to the default "near" return
     expect(extractDestinationChain(
-      "nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near",
-    )).toBe("eip155:42161");
-    // Ethereum USDC
-    expect(extractDestinationChain(
-      "nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near",
-    )).toBe("eip155:1");
-    // Base USDC
-    expect(extractDestinationChain(
-      "nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near",
-    )).toBe("eip155:8453");
-    // Optimism
-    expect(extractDestinationChain(
-      "nep141:op-0x0b2c639c533813f4aa9d7837caf62653d097ff85.omft.near",
-    )).toBe("eip155:10");
-    // Polygon
-    expect(extractDestinationChain(
-      "nep141:polygon-0x3c499c542cef5e3811e1192ce70d8cc03d5c3359.omft.near",
-    )).toBe("eip155:137");
+      "nep141:solana-0xabcdef1234567890abcdef1234567890abcdef12.omft.near",
+    )).toBe("near");
   });
 
   it("should return 'near' for native NEAR NEP-141 assets", () => {

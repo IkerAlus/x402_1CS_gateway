@@ -86,8 +86,8 @@ All 10 of these must be set (no defaults):
 | Field | Format | Example |
 |-------|--------|---------|
 | `ONE_CLICK_JWT` | JWT string | `eyJhbGciOiJS...` |
-| `MERCHANT_RECIPIENT` | NEAR account | `merchant.near` |
-| `MERCHANT_ASSET_OUT` | NEP-141 asset ID | `nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1` |
+| `MERCHANT_RECIPIENT` | NEAR account or EVM address | `merchant.near` or `0x1234...abcd` |
+| `MERCHANT_ASSET_OUT` | NEP-141 asset ID | `nep141:17208628f84f5...` (NEAR) or `nep141:arb-0xaf88...omft.near` (Arbitrum) |
 | `MERCHANT_AMOUNT_OUT` | Integer (smallest unit) | `1000000` (= 1 USDC) |
 | `ORIGIN_NETWORK` | CAIP-2 string | `eip155:8453` |
 | `ORIGIN_ASSET_IN` | NEP-141 asset ID | `nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near` |
@@ -146,16 +146,11 @@ Note: The facilitator handle private keys that authorize moving funds of users. 
 
 ### Critical note: asset ID formats
 
-The 1CS API uses the `nep141:` prefix format for all assets. The two asset IDs you need are:
+The 1CS API uses the `nep141:` prefix format for all assets. The origin asset ID is:
 
 **USDC on Base (origin — what the buyer pays)**:
 ```
 nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near
-```
-
-**USDC on NEAR (destination — what the merchant receives)**:
-```
-nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1
 ```
 
 The old `base:0x...` and `near:nUSDC` formats are **not accepted** by the 1CS API. You can verify the correct IDs by calling `GET https://1click.chaindefuser.com/v0/tokens` and searching for USDC, or running:
@@ -164,6 +159,22 @@ The old `base:0x...` and `near:nUSDC` formats are **not accepted** by the 1CS AP
 chmod +x scripts/test-1cs-quote.sh
 ./scripts/test-1cs-quote.sh
 ```
+
+### Merchant destination chains
+
+The merchant can receive on **any chain supported by the 1CS API**. The destination is configured via `MERCHANT_RECIPIENT` and `MERCHANT_ASSET_OUT`. The recipient format must match the destination chain:
+
+| Destination | `MERCHANT_RECIPIENT` | `MERCHANT_ASSET_OUT` |
+|-------------|---------------------|---------------------|
+| **NEAR** | `merchant.near` | `nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1` |
+| **Ethereum** | `0xYourEthAddress` | `nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near` |
+| **Arbitrum** | `0xYourArbAddress` | `nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near` |
+| **Polygon** | `0xYourPolyAddress` | `nep141:polygon-0x3c499c542cef5e3811e1192ce70d8cc03d5c3359.omft.near` |
+| **Optimism** | `0xYourOpAddress` | `nep141:op-0x0b2c639c533813f4aa9d7837caf62653d097ff85.omft.near` |
+| **Avalanche** | `0xYourAvaxAddress` | `nep141:avax-0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e.omft.near` |
+| **BSC** | `0xYourBscAddress` | `nep141:bsc-0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d.omft.near` |
+
+The gateway validates at startup that the recipient format matches the destination chain and warns if there's a mismatch (e.g., a NEAR account name with an EVM destination asset).
 
 ### Critical note: TOKEN_NAME
 
@@ -331,7 +342,7 @@ This simulates a buyer wallet, decodes the 402, and shows exactly what it would 
 
 2. **Facilitator wallet** — needs a small amount of ETH on Base for gas. 0.001 ETH is plenty for a single test. This is the wallet whose private key is `FACILITATOR_PRIVATE_KEY`.
 
-3. **Merchant account** — a NEAR account (`MERCHANT_RECIPIENT`) that will receive the funds. Can be any valid NEAR account.
+3. **Merchant account** — a NEAR account or EVM address (`MERCHANT_RECIPIENT`) that will receive the funds. The format must match the destination chain configured in `MERCHANT_ASSET_OUT`.
 
 ### Fund the wallets
 
@@ -532,6 +543,10 @@ MERCHANT_ASSET_OUT=nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad20
 ```
 
 Run `scripts/test-1cs-quote.sh` to discover the correct asset IDs from the live API.
+
+### "MERCHANT_RECIPIENT does not look like an EVM address"
+
+This startup warning means `MERCHANT_ASSET_OUT` targets an EVM chain (e.g., Arbitrum, Ethereum) but `MERCHANT_RECIPIENT` is not an EVM address (0x...). Update `MERCHANT_RECIPIENT` to match the destination chain format. See the "Merchant destination chains" section above.
 
 ### "Signer mismatch: signature recovers to 0x..."
 

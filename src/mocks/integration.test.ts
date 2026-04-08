@@ -28,6 +28,7 @@ import {
   MOCK_DEPOSIT_ADDRESS,
   BUYER_ADDRESS,
   MOCK_TX_HASH,
+  DESTINATION_PRESETS,
   buyerWallet,
 } from "./index.js";
 
@@ -166,15 +167,17 @@ describe("Integration: full x402 flow with mocks", () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════
-  // EIP-3009 with EVM destination (Arbitrum)
+  // EIP-3009 with multiple merchant destination chains
   // ═══════════════════════════════════════════════════════════════════
 
-  describe("EIP-3009 — EVM destination chain (Arbitrum)", () => {
-    it("should report correct destinationChain for Arbitrum USDC", async () => {
-      const arbCfg = mockFastPollConfig({
-        merchantAssetOut: "nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near",
-        merchantRecipient: "0xMerchantOnArbitrum",
-      });
+  describe.each([
+    ["NEAR", DESTINATION_PRESETS.near, "near"],
+    ["Arbitrum", DESTINATION_PRESETS.arbitrum, "eip155:42161"],
+    ["Ethereum", DESTINATION_PRESETS.ethereum, "eip155:1"],
+    ["Polygon", DESTINATION_PRESETS.polygon, "eip155:137"],
+  ] as const)("EIP-3009 — %s destination", (_label, preset, expectedChain) => {
+    it(`should report destinationChain = ${expectedChain}`, async () => {
+      const destCfg = mockFastPollConfig(preset);
 
       const now = Date.now();
       const state: SwapState = {
@@ -192,7 +195,7 @@ describe("Integration: full x402 flow with mocks", () => {
       });
 
       const chainReader = mockChainReader();
-      await verifyPayment(payload, store, chainReader, arbCfg, {
+      await verifyPayment(payload, store, chainReader, destCfg, {
         skipOnChainChecks: true,
       });
 
@@ -202,14 +205,12 @@ describe("Integration: full x402 flow with mocks", () => {
         mockBroadcastFn(),
         mockDepositNotifyFn(),
         mockStatusPollFn(),
-        arbCfg,
+        destCfg,
       );
 
       expect(response.success).toBe(true);
-      expect(response.extra?.destinationChain).toBe("eip155:42161");
-      expect(response.extra?.destinationAsset).toBe(
-        "nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near",
-      );
+      expect(response.extra?.destinationChain).toBe(expectedChain);
+      expect(response.extra?.destinationAsset).toBe(preset.merchantAssetOut);
     });
   });
 

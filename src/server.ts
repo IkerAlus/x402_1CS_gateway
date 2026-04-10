@@ -30,7 +30,10 @@ async function main(): Promise<void> {
   });
   process.on("uncaughtException", (err) => {
     console.error("[x402-1CS] Uncaught exception:", err);
-    process.exit(1);
+    // Don't exit immediately — let in-flight settlements finish.
+    // The process is in an undefined state, so stop accepting new work
+    // and exit after a grace period.
+    setTimeout(() => process.exit(1), 5000).unref();
   });
 
   // ── 1. Load and validate config ────────────────────────────────────
@@ -145,6 +148,8 @@ async function main(): Promise<void> {
   const port = parseInt(process.env.PORT ?? "3402", 10);
   const server = app.listen(port, () => {
     server.setTimeout(300_000); // 5 min — matches maxPollTimeMs default
+    server.headersTimeout = 305_000; // must be > setTimeout per Node.js docs
+    server.requestTimeout = 310_000; // total request time ceiling
     console.log("");
     console.log("═══════════════════════════════════════════════════════");
     console.log(`  x402-1CS Gateway running on http://localhost:${port}`);

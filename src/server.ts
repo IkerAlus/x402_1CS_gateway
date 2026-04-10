@@ -24,6 +24,15 @@ import type { MiddlewareDeps } from "./middleware.js";
 import { createRateLimiting, destroyRateLimiting } from "./rate-limiter.js";
 
 async function main(): Promise<void> {
+  // ── 0. Global error handlers ───────────────────────────────────────
+  process.on("unhandledRejection", (reason) => {
+    console.error("[x402-1CS] Unhandled rejection:", reason);
+  });
+  process.on("uncaughtException", (err) => {
+    console.error("[x402-1CS] Uncaught exception:", err);
+    process.exit(1);
+  });
+
   // ── 1. Load and validate config ────────────────────────────────────
   console.log("[x402-1CS] Loading configuration...");
   const cfg = loadConfigFromEnv();
@@ -98,7 +107,8 @@ async function main(): Promise<void> {
 
   // ── 6. Create Express app ──────────────────────────────────────────
   const app = express();
-  app.use(express.json());
+  app.set("trust proxy", 1); // Trust first proxy hop (nginx, Cloudflare, etc.)
+  app.use(express.json({ limit: "1mb" }));
 
   // Health check (no payment required)
   app.get("/health", (_req, res) => {
@@ -134,6 +144,7 @@ async function main(): Promise<void> {
   // ── 7. Start server ────────────────────────────────────────────────
   const port = parseInt(process.env.PORT ?? "3402", 10);
   const server = app.listen(port, () => {
+    server.setTimeout(300_000); // 5 min — matches maxPollTimeMs default
     console.log("");
     console.log("═══════════════════════════════════════════════════════");
     console.log(`  x402-1CS Gateway running on http://localhost:${port}`);

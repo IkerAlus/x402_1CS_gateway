@@ -332,9 +332,13 @@ export async function settlePayment(
   try {
     configureOneClickSdk(cfg);
     await depositNotifyFn(broadcastResult.txHash, depositAddress);
-  } catch {
+  } catch (err) {
     // Non-fatal: 1CS may detect the deposit on its own via chain monitoring.
-    // We log and continue to polling.
+    // Log prominently and continue to polling.
+    console.warn(
+      `[x402] ⚠️  Deposit notify failed for ${depositAddress} (tx: ${broadcastResult.txHash}):`,
+      err instanceof Error ? err.message : err,
+    );
   }
 
   // ── 5. Poll 1CS for terminal status ───────────────────────────────

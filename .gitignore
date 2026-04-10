@@ -8,3 +8,6 @@ coverage/
 
 # Vitest cache / compiled config
 vitest.config.ts.timestamp-*
+
+# Claude Code local context (personal, not shared)
+CLAUDE.local.md

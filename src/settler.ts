@@ -47,8 +47,9 @@ import {
 // Per-call timeout utility
 // ═══════════════════════════════════════════════════════════════════════
 
-/** Default per-call timeout for broadcast operations (30s). */
-const BROADCAST_TIMEOUT_MS = 30_000;
+/** Default per-call timeout for broadcast operations (60s).
+ *  Covers estimateGas + sendTransaction + wait(1 confirmation) on mainnet. */
+const BROADCAST_TIMEOUT_MS = 60_000;
 
 /** Default per-call timeout for individual poll calls (15s). */
 const POLL_CALL_TIMEOUT_MS = 15_000;
@@ -219,6 +220,13 @@ export interface SettlerOptions {
    * @default 1 (suitable for L2s like Base)
    */
   confirmations?: number;
+
+  /**
+   * Timeout (ms) for the entire broadcast operation
+   * (estimateGas + sendTransaction + wait for confirmations).
+   * @default 60_000 (60s)
+   */
+  broadcastTimeoutMs?: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -312,7 +320,7 @@ export async function settlePayment(
         broadcastFn,
         options,
       ),
-      BROADCAST_TIMEOUT_MS,
+      options.broadcastTimeoutMs ?? BROADCAST_TIMEOUT_MS,
       "Broadcast",
     );
 
@@ -603,15 +611,51 @@ export function buildSettlementResponse(
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
+ * Manually poll for a transaction receipt.
+ *
+ * ethers v6's `tx.wait()` relies on internal block-polling that can stall
+ * with certain RPC providers (especially on L2s like Base). This function
+ * polls `getTransactionReceipt` directly with a fixed interval, which is
+ * more resilient to provider quirks.
+ */
+async function waitForReceipt(
+  provider: ethers.Provider,
+  txHash: string,
+  intervalMs: number = 2_000,
+  maxAttempts: number = 30,
+): Promise<ethers.TransactionReceipt> {
+  for (let i = 0; i < maxAttempts; i++) {
+    const receipt = await provider.getTransactionReceipt(txHash);
+    if (receipt) {
+      if (receipt.status === 0) {
+        throw new GatewayError(
+          `Transaction reverted on-chain: ${txHash}`,
+          "TX_REVERTED",
+          502,
+        );
+      }
+      return receipt;
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new GatewayError(
+    `Transaction not mined after ${maxAttempts} poll attempts: ${txHash}`,
+    "TX_NOT_MINED",
+    504,
+  );
+}
+
+/**
  * Create a production {@link BroadcastFn} from an ethers.js `Wallet`.
  *
  * The wallet must be connected to a provider for the origin chain.
  * D-S1: Uses dynamic `estimateGas()` + configurable buffer multiplier.
- * D-S2: Waits for 1 block confirmation.
+ * D-S2: Polls for receipt confirmation (resilient to provider polling quirks).
  */
 export function createBroadcastFn(
   wallet: ethers.Wallet,
-  confirmations: number = 1,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _confirmations: number = 1,
 ): BroadcastFn {
   return {
     async broadcastEIP3009(
@@ -651,16 +695,14 @@ export function createBroadcastFn(
         { gasLimit },
       );
 
-      // D-S2: Wait for confirmation
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-      const receipt = await tx.wait(confirmations);
+      // D-S2: Poll for receipt (more resilient than tx.wait() which can stall)
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const txHash = tx.hash as string;
+      const receipt = await waitForReceipt(wallet.provider!, txHash);
 
       return {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         txHash: receipt.hash,
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         blockNumber: receipt.blockNumber,
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         gasUsed: receipt.gasUsed,
       };
     },
@@ -709,16 +751,14 @@ export function createBroadcastFn(
         { gasLimit },
       );
 
-      // D-S2: Wait for confirmation
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-      const receipt = await tx.wait(confirmations);
+      // D-S2: Poll for receipt (more resilient than tx.wait() which can stall)
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const txHash = tx.hash as string;
+      const receipt = await waitForReceipt(wallet.provider!, txHash);
 
       return {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         txHash: receipt.hash,
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         blockNumber: receipt.blockNumber,
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         gasUsed: receipt.gasUsed,
       };
     },

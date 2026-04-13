@@ -147,9 +147,13 @@ async function main(): Promise<void> {
   // ── 7. Start server ────────────────────────────────────────────────
   const port = parseInt(process.env.PORT ?? "3402", 10);
   const server = app.listen(port, () => {
-    server.setTimeout(300_000); // 5 min — matches maxPollTimeMs default
-    server.headersTimeout = 305_000; // must be > setTimeout per Node.js docs
-    server.requestTimeout = 310_000; // total request time ceiling
+    // Worst-case request duration: broadcast (60s) + polling (maxPollTimeMs=300s) = 360s
+    // All three Node.js timeouts must exceed that, with headersTimeout > setTimeout
+    // and requestTimeout > headersTimeout per Node.js docs.
+    const maxRequestMs = cfg.maxPollTimeMs + 120_000; // poll budget + 2 min headroom
+    server.setTimeout(maxRequestMs);
+    server.headersTimeout = maxRequestMs + 5_000;
+    server.requestTimeout = maxRequestMs + 10_000;
     console.log("");
     console.log("═══════════════════════════════════════════════════════");
     console.log(`  x402-1CS Gateway running on http://localhost:${port}`);

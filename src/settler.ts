@@ -312,6 +312,7 @@ export async function settlePayment(
   let broadcastResult: BroadcastResult;
   try {
     await store.update(depositAddress, { phase: "BROADCASTING" });
+    console.log(`[x402] ▶ Broadcasting origin tx for ${depositAddress}...`);
 
     broadcastResult = await withTimeout(
       broadcastTransaction(
@@ -328,6 +329,9 @@ export async function settlePayment(
       phase: "BROADCAST",
       originTxHash: broadcastResult.txHash,
     });
+    console.log(
+      `[x402] ✓ Origin tx broadcast for ${depositAddress}: tx=${broadcastResult.txHash}, block=${broadcastResult.blockNumber}`,
+    );
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     await failSwap(store, depositAddress, `Broadcast failed: ${errorMsg}`);
@@ -337,15 +341,24 @@ export async function settlePayment(
   }
 
   // ── 4. Notify 1CS of the deposit ──────────────────────────────────
+  // Record the outcome so we can include it in any downstream SwapTimeoutError.
+  // The notify response's `status` field can hint at early 1CS-side validation
+  // problems (e.g. invalid destination), which are otherwise invisible until
+  // polling eventually times out.
+  let notifyOutcome: string;
   try {
     configureOneClickSdk(cfg);
-    await depositNotifyFn(broadcastResult.txHash, depositAddress);
+    const notifyResult = await depositNotifyFn(broadcastResult.txHash, depositAddress);
+    notifyOutcome = `deposit-notify OK (status=${notifyResult.status}${notifyResult.correlationId ? `, correlationId=${notifyResult.correlationId}` : ""})`;
+    console.log(`[x402] ✓ ${notifyOutcome} for ${depositAddress} (tx: ${broadcastResult.txHash})`);
   } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    notifyOutcome = `deposit-notify FAILED (${errMsg})`;
     // Non-fatal: 1CS may detect the deposit on its own via chain monitoring.
     // Log prominently and continue to polling.
     console.warn(
       `[x402] ⚠️  Deposit notify failed for ${depositAddress} (tx: ${broadcastResult.txHash}):`,
-      err instanceof Error ? err.message : err,
+      errMsg,
     );
   }
 
@@ -353,6 +366,9 @@ export async function settlePayment(
   let pollResult: StatusPollResult;
   try {
     await store.update(depositAddress, { phase: "POLLING" });
+    console.log(
+      `[x402] ⏳ Polling 1CS status for ${depositAddress} (budget: ${Math.round(cfg.maxPollTimeMs / 1000)}s)...`,
+    );
 
     pollResult = await pollUntilTerminal(
       depositAddress,
@@ -361,9 +377,15 @@ export async function settlePayment(
       cfg,
     );
   } catch (err) {
-    if (err instanceof SwapTimeoutError || err instanceof SwapFailedError) {
-      const errorMsg = err.message;
-      await failSwap(store, depositAddress, errorMsg);
+    if (err instanceof SwapTimeoutError) {
+      // Augment the timeout message with the earlier notify outcome so
+      // operators can tell whether 1CS ever acknowledged the deposit.
+      const augmented = new SwapTimeoutError(`${err.message} | ${notifyOutcome}`);
+      await failSwap(store, depositAddress, augmented.message);
+      throw augmented;
+    }
+    if (err instanceof SwapFailedError) {
+      await failSwap(store, depositAddress, err.message);
       throw err;
     }
     const errorMsg = err instanceof Error ? err.message : String(err);
@@ -377,6 +399,10 @@ export async function settlePayment(
     broadcastResult,
     pollResult,
     cfg,
+  );
+
+  console.log(
+    `[x402] ✅ Settled ${depositAddress} → 1CS status=${pollResult.status}, destChain=${extractDestinationChain(cfg.merchantAssetOut)}`,
   );
 
   // ── 7. Finalize state ─────────────────────────────────────────────

@@ -185,6 +185,7 @@ async function main(): Promise<void> {
 
   const encodedPayment = encodeBase64(paymentPayload);
   console.log(`  ✅ Signed (${transferMethod}) — payload length: ${encodedPayment.length} chars`);
+  console.log(`  → Paying to deposit address: ${accepted.payTo}`);
 
   // ── Step 4: Retry with PAYMENT-SIGNATURE ───────────────────────────
   console.log("");
@@ -201,6 +202,7 @@ async function main(): Promise<void> {
 
   if (paymentRes.status === 200) {
     console.log("  ✅ Payment accepted!");
+    console.log(`  Deposit address: ${accepted.payTo}`);
     console.log("");
 
     // Decode PAYMENT-RESPONSE
@@ -227,6 +229,7 @@ async function main(): Promise<void> {
     console.log("  Resource body:", JSON.stringify(body, null, 2));
   } else {
     console.log(`  ❌ Payment failed with status ${paymentRes.status}`);
+    console.log(`  Deposit address: ${accepted.payTo}`);
     const body = await paymentRes.text();
     console.log(`  Body: ${body}`);
 

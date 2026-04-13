@@ -299,6 +299,10 @@ async function returnPaymentRequired(
     deps.quoteFn,
   );
 
+  console.log(
+    `[x402] 402 issued for ${req.originalUrl} → deposit=${requirements.payTo}, amount=${requirements.amount}`,
+  );
+
   const paymentRequired: PaymentRequired = {
     x402Version: 2,
     resource: {

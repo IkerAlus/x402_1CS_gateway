@@ -1,6 +1,6 @@
 # x402-1CS Gateway — Production Readiness TODO
 
-**Date:** 2026-04-13
+**Date:** 2026-04-14
 **Based on:** Full codebase audit + 295 passing tests (278 mocked + 17 live) + typecheck clean
 **Target:** Prototype deployment for a small number of users
 
@@ -33,7 +33,11 @@
 - **Broadcast timeout** — Bumped from 30s → 60s default; made configurable via `SettlerOptions.broadcastTimeoutMs`.
 - **Error handlers** — `unhandledRejection` logs; `uncaughtException` uses delayed exit (`setTimeout(..., 5000).unref()`) so in-flight settlements can finish.
 - **Trust proxy + body limit** — `app.set("trust proxy", 1)` + `express.json({ limit: "1mb" })`.
-- **Deposit-notify logging** — Catch block now actually emits `console.warn` with deposit address + tx hash.
+- **Deposit-notify logging** — Catch block now actually emits `console.warn` with deposit address + tx hash. Notify outcome is threaded into `SwapTimeoutError` so operators can tell whether 1CS acknowledged the deposit.
+- **Phase-transition logging** — `settlePayment()` now logs at each phase change: `▶ Broadcasting`, `✓ Origin tx broadcast` (with tx hash + block), `⏳ Polling 1CS status` (with poll budget), `✅ Settled` (with 1CS status + destination chain).
+- **402-issued logging** — `returnPaymentRequired()` now logs `[x402] 402 issued for <url> → deposit=<addr>, amount=<amount>` for every quote handed out.
+- **Test-client deposit address** — `scripts/test-client.ts` now prints the deposit address in Steps 3 and 4 (success + failure paths) for easier correlation with gateway logs.
+- **`.env.stellar` preset** — New pre-filled env file for Base USDC → Stellar USDC merchant destinations.
 
 ---
 

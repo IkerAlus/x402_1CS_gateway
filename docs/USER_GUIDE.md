@@ -217,7 +217,7 @@ The repository includes a test client script that automates the full flow.
 
 ```bash
 git clone <repo-url>
-cd x402_1CSAPI_impl
+cd x402_1CS_gateway
 npm install
 ```
 

@@ -15,7 +15,7 @@ This guide walks you through deploying and testing the gateway against the **rea
 ## 1. Install dependencies
 
 ```bash
-cd x402_1CSAPI_impl
+cd x402_1CS_gateway
 npm install
 ```
 
@@ -443,7 +443,7 @@ const client = new X402Client({
 
 ## 8. Running the test suite
 
-The project has 266 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
+The project has 278 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
 
 ### npm scripts
 
@@ -463,11 +463,11 @@ npm run format:check  # Prettier check
 npm test
 ```
 
-Runs 266 tests across 13 test files with fully mocked external dependencies. No API key, funds, or network access required. Covers:
+Runs 278 tests across 13 test files with fully mocked external dependencies. No API key, funds, or network access required. Covers:
 
 - **State store** (49 tests) — CRUD, TTL, concurrency, phase transitions
 - **Verifier** (34 tests) — EIP-3009 and Permit2 signature recovery, balance checks, nonce replay, timing
-- **Settler** (27 tests) — broadcast, deposit notification, status polling, timeout handling
+- **Settler** (33 tests) — broadcast, deposit notification, status polling, timeout handling, deposit-notify logging
 - **Quote engine** (26 tests) — quote building, deadline validation, fee calculation
 - **Rate limiter** (23 tests) — per-IP quote limiting, settlement concurrency cap, quote garbage collection
 - **Types** (22 tests) — type guards, CAIP-2 parsing, error classes
@@ -477,7 +477,7 @@ Runs 266 tests across 13 test files with fully mocked external dependencies. No 
 - **Client signer** (12 tests) — EIP-3009/Permit2 signature round-trips, nonce uniqueness, chain ID parsing
 - **Provider pool** (11 tests) — RPC rotation, failover, health checks
 - **Config** (10 tests) — Zod validation, defaults, environment loading
-- **Mock integration** (8 tests) — mock dependency wiring and consistency
+- **Mock integration** (14 tests) — multi-chain parametrized flow (NEAR, Arbitrum, Ethereum, Polygon, Stellar, Solana)
 
 ### Live 1CS API tests
 
@@ -587,7 +587,7 @@ The gateway limits concurrent in-flight settlements (default: 10). If all slots 
 ### Project structure
 
 ```
-x402_1CSAPI_impl/
+x402_1CS_gateway/
 ├── src/
 │   ├── server.ts              # HTTP entry point
 │   ├── config.ts              # Zod-validated env config
@@ -616,15 +616,11 @@ x402_1CSAPI_impl/
 ├── docs/
 │   ├── DEPLOYMENT_GUIDE.md    # This file
 │   ├── USER_GUIDE.md          # Buyer-facing usage guide
-│   ├── AUDIT_REPORT.md        # Security audit report
+│   ├── Facilitator_keys_guidance.md  # Facilitator key management guide
 │   ├── TEST_RESULTS.md        # Latest test run results
-│   ├── implementation-roadmap.md
-│   ├── settler-implementation-plan.docx
-│   ├── architecture-status.svg
 │   ├── verifier-flow.svg
-│   ├── x402_1CS_Gateway_Report.pdf
-│   └── research/              # External research material
 ├── .env.example               # Environment variable template
+├── .env.stellar               # Pre-filled config for Stellar merchant destination
 ├── vitest.config.ts           # Test runner configuration
 ├── tsconfig.json              # TypeScript configuration
 └── package.json

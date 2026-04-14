@@ -38,10 +38,11 @@ x402_1CS_gateway/
 ├── docs/
 │   ├── DEPLOYMENT_GUIDE.md    # This file
 │   ├── USER_GUIDE.md          # Buyer-facing usage guide
-│   ├── FACILITATOR_GUIDE.md   # Facilitator guide for key management
+│   ├── Facilitator_keys_guidance.md  # Facilitator key management guide
 │   ├── TEST_RESULTS.md        # Latest test run results
 │   ├── verifier-flow.svg
 ├── .env.example               # Environment variable template
+├── .env.stellar               # Pre-filled config for Stellar merchant destination
 ├── vitest.config.ts           # Test runner configuration
 ├── tsconfig.json              # TypeScript configuration
 └── package.json
@@ -142,7 +143,7 @@ TOKEN_NAME=USD Coin
 TOKEN_VERSION=2
 TOKEN_SUPPORTS_EIP3009=true
 ```
-Note: The facilitator handle private keys that authorize moving funds of users. Check in detail the [Facilitor Guide](docs/Facilitator_keys_guidance.md) for key management beforehand.
+Note: The facilitator handle private keys that authorize moving funds of users. Check in detail the [Facilitator Key Management Guide](docs/Facilitator_keys_guidance.md) beforehand.
 
 ### Critical note: asset ID formats
 
@@ -469,7 +470,7 @@ const client = new X402Client({
 
 ## 8. Running the test suite
 
-The project has 266 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
+The project has 278 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
 
 ### npm scripts
 
@@ -489,11 +490,11 @@ npm run format:check  # Prettier check
 npm test
 ```
 
-Runs 266 tests across 13 test files with fully mocked external dependencies. No API key, funds, or network access required. Covers:
+Runs 278 tests across 13 test files with fully mocked external dependencies. No API key, funds, or network access required. Covers:
 
 - **State store** (49 tests) — CRUD, TTL, concurrency, phase transitions
 - **Verifier** (34 tests) — EIP-3009 and Permit2 signature recovery, balance checks, nonce replay, timing
-- **Settler** (27 tests) — broadcast, deposit notification, status polling, timeout handling
+- **Settler** (33 tests) — broadcast, deposit notification, status polling, timeout handling, deposit-notify logging
 - **Quote engine** (26 tests) — quote building, deadline validation, fee calculation
 - **Rate limiter** (23 tests) — per-IP quote limiting, settlement concurrency cap, quote garbage collection
 - **Types** (22 tests) — type guards, CAIP-2 parsing, error classes
@@ -503,7 +504,7 @@ Runs 266 tests across 13 test files with fully mocked external dependencies. No 
 - **Client signer** (12 tests) — EIP-3009/Permit2 signature round-trips, nonce uniqueness, chain ID parsing
 - **Provider pool** (11 tests) — RPC rotation, failover, health checks
 - **Config** (10 tests) — Zod validation, defaults, environment loading
-- **Mock integration** (8 tests) — mock dependency wiring and consistency
+- **Mock integration** (14 tests) — multi-chain parametrized flow (NEAR, Arbitrum, Ethereum, Polygon, Stellar, Solana)
 
 ### Live 1CS API tests
 

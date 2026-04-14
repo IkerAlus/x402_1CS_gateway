@@ -1,6 +1,6 @@
 # x402-1CS Gateway — Test Results Report
 
-**Date:** 2026-04-02 15:11 UTC+2
+**Date:** 2026-04-14
 **Vitest version:** 2.1.9
 **Node environment:** node
 **Platform:** macOS (Darwin 24.5.0)
@@ -9,29 +9,29 @@
 
 ## 1. Mocked Test Suite (Unit + Integration)
 
-**Result: 266 passed | 0 failed | 17 skipped (live-only)**
-**Duration: 1.44s total (1.85s test execution)**
+**Result: 278 passed | 0 failed | 17 skipped (live-only)**
+**Duration: ~1.7s total**
 
 | File | Tests | Duration | Description |
 |------|------:|----------|-------------|
-| `src/store.test.ts` | 49 | 218ms | InMemoryStateStore CRUD, concurrency, TTL |
-| `src/verifier.test.ts` | 34 | 422ms | EIP-712 signature verification (EIP-3009 + Permit2) |
-| `src/settler.test.ts` | 27 | 140ms | Broadcast, polling, settlement, timeout handling |
-| `src/quote-engine.test.ts` | 26 | 9ms | 1CS quote translation to x402 PaymentRequirements |
-| `src/rate-limiter.test.ts` | 23 | 179ms | Per-IP quote rate limiting, settlement limiter, quote GC |
-| `src/types.test.ts` | 22 | 23ms | Type guards, CAIP-2 parsing, error classes |
-| `src/client/x402-client.test.ts` | 18 | 281ms | Full x402 client protocol against mocked gateway |
-| `src/e2e.test.ts` | 14 | 333ms | HTTP protocol compliance (402 -> sign -> 200) |
-| `src/middleware.test.ts` | 12 | 88ms | Express middleware request/response handling |
-| `src/client/signer.test.ts` | 12 | 40ms | EIP-3009 and Permit2 signing, chain ID extraction |
-| `src/provider-pool.test.ts` | 11 | 44ms | RPC provider rotation and failover |
-| `src/config.test.ts` | 10 | 7ms | Zod schema validation, env var parsing |
-| `src/mocks/integration.test.ts` | 8 | 70ms | Mock dependency wiring and consistency |
+| `src/store.test.ts` | 49 | 193ms | InMemoryStateStore CRUD, concurrency, TTL |
+| `src/verifier.test.ts` | 34 | 350ms | EIP-712 signature verification (EIP-3009 + Permit2) |
+| `src/settler.test.ts` | 33 | 136ms | Broadcast, polling, settlement, timeout, deposit-notify logging |
+| `src/quote-engine.test.ts` | 26 | 10ms | 1CS quote translation to x402 PaymentRequirements |
+| `src/rate-limiter.test.ts` | 23 | 150ms | Per-IP quote rate limiting, settlement limiter, quote GC |
+| `src/types.test.ts` | 22 | 8ms | Type guards, CAIP-2 parsing, error classes |
+| `src/client/x402-client.test.ts` | 18 | 220ms | Full x402 client protocol against mocked gateway |
+| `src/e2e.test.ts` | 14 | 236ms | HTTP protocol compliance (402 -> sign -> 200) |
+| `src/mocks/integration.test.ts` | 14 | 167ms | Multi-chain parametrized flow (NEAR, Arbitrum, Ethereum, Polygon, Stellar, Solana) |
+| `src/middleware.test.ts` | 12 | 90ms | Express middleware request/response handling |
+| `src/client/signer.test.ts` | 12 | 46ms | EIP-3009 and Permit2 signing, chain ID extraction |
+| `src/provider-pool.test.ts` | 11 | 30ms | RPC provider rotation and failover |
+| `src/config.test.ts` | 10 | 10ms | Zod schema validation, env var parsing |
 
 ### Performance Notes
 
-- Total collection time: 7.57s (TypeScript transform + module resolution)
-- Actual test execution: 1.85s for 266 tests (~7.0ms per test average)
+- Total collection time: ~9s (TypeScript transform + module resolution)
+- Actual test execution: ~1.5s for 278 tests (~5.4ms per test average)
 - Slowest file: `src/verifier.test.ts` (422ms) — involves EIP-712 cryptographic signature verification
 - All tests run in-process with mocked external dependencies (no network, no RPC)
 
@@ -87,9 +87,9 @@
 
 | Category | Tests | Pass Rate | Execution Time |
 |----------|------:|----------:|---------------:|
-| Unit + Integration (mocked) | 266 | 100% | 1.85s |
-| Live 1CS API | 17 | 100% | 70.69s |
-| **Total** | **283** | **100%** | **72.54s** |
+| Unit + Integration (mocked) | 278 | 100% | ~1.5s |
+| Live 1CS API | 17 | 100% | ~71s |
+| **Total** | **295** | **100%** | **~72s** |
 
 ### Test distribution by module
 
@@ -97,7 +97,7 @@
 |--------|------------:|----------:|------:|
 | State store | 49 | 1 | 50 |
 | Verifier | 34 | 0 | 34 |
-| Settler | 27 | 2 | 29 |
+| Settler | 33 | 2 | 35 |
 | Quote engine | 26 | 6 | 32 |
 | Rate limiter | 23 | 0 | 23 |
 | Types | 22 | 0 | 22 |
@@ -107,7 +107,7 @@
 | Client (signer) | 12 | 0 | 12 |
 | Provider pool | 11 | 0 | 11 |
 | Config | 10 | 0 | 10 |
-| Mock integration | 8 | 0 | 8 |
+| Mock integration | 14 | 0 | 14 |
 | Error handling | 0 | 2 | 2 |
 | Amount sizing | 0 | 2 | 2 |
 | Concurrency | 0 | 1 | 1 |

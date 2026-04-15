@@ -5,6 +5,17 @@
  * with real cryptographic signatures (EIP-712) and mock external deps
  * (chain reader, broadcaster, 1CS API). They validate that the modules
  * work together correctly per the x402 spec.
+ *
+ * NOTE: This file is INTENTIONALLY DISTINCT from `src/e2e.test.ts`.
+ * - `e2e.test.ts` asserts the canonical x402 HTTP wire format (headers,
+ *   status codes, base64 encoding) using supertest against a real Express app.
+ * - This file fans the happy- and sad-path flows out across every
+ *   `DESTINATION_PRESETS` entry (NEAR / Arbitrum / Ethereum / Polygon /
+ *   Stellar / Solana) via `describe.each`, calling the gateway functions
+ *   directly without HTTP marshalling.
+ *
+ * Both axes (HTTP wire compliance × multi-chain destination) are needed.
+ * Do NOT merge this file into `e2e.test.ts`.
  */
 
 import { describe, it, expect, beforeEach } from "vitest";

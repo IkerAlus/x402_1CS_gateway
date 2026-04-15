@@ -13,6 +13,7 @@ x402_1CS_gateway/
 ├── src/
 │   ├── server.ts              # HTTP entry point
 │   ├── config.ts              # Zod-validated env config
+│   ├── cors-options.ts        # CORS options builder (helmet+cors wired in server.ts)
 │   ├── middleware.ts           # Express x402 middleware
 │   ├── quote-engine.ts        # 1CS quote building
 │   ├── verifier.ts            # EIP-3009/Permit2 signature verification
@@ -22,6 +23,7 @@ x402_1CS_gateway/
 │   ├── rate-limiter.ts        # Per-IP rate limiting, settlement cap, quote GC
 │   ├── types.ts               # Shared type definitions
 │   ├── index.ts               # Library entry point
+│   ├── server.test.ts         # CORS + helmet wiring tests (3)
 │   ├── client/                # Buyer-side client library
 │   │   ├── index.ts           #    Public API re-exports
 │   │   ├── types.ts           #    Client-side type definitions
@@ -36,7 +38,8 @@ x402_1CS_gateway/
 │   ├── verify-api-key.ts      # 1CS JWT verification
 │   └── test-1cs-quote.sh      # Shell script for raw quote testing
 ├── docs/
-│   ├── DEPLOYMENT_GUIDE.md    # This file
+│   ├── TODO.md                # Production-readiness checklist
+│   ├── DEPLOYMENT_GUIDE.md    # Deployment and production setup
 │   ├── USER_GUIDE.md          # Buyer-facing usage guide
 │   ├── Facilitator_keys_guidance.md  # Facilitator key management guide
 │   ├── TEST_RESULTS.md        # Latest test run results
@@ -96,6 +99,14 @@ All 10 of these must be set (no defaults):
 | `ORIGIN_RPC_URLS` | Comma-separated URLs | `https://mainnet.base.org` |
 | `FACILITATOR_PRIVATE_KEY` | EVM private key (0x + 64 hex) | `0x59c6995e998f97a5a...` |
 | `GATEWAY_REFUND_ADDRESS` | EVM address (0x + 40 hex) | `0x70997970C51812dc3A010C7d01b50e0d17dc79C8` |
+
+### Optional fields
+
+| Field | Format | Default | Notes |
+|-------|--------|---------|-------|
+| `ALLOWED_ORIGINS` | Comma-separated origins | unset (reflects any origin) | CORS allowlist. Required when a browser-based x402 client needs to read `PAYMENT-REQUIRED` / `PAYMENT-RESPONSE`. Example: `https://buyer.example.com,https://app.example.com`. |
+
+All other tuning knobs (rate limits, poll intervals, token metadata, etc.) have safe defaults; see `.env.example` for the full list.
 
 ### Minimal .env for dry 402 testing (no funds needed)
 
@@ -238,6 +249,7 @@ You should see:
 [x402-1CS] Facilitator gas balance: 0.000000 ETH
 [x402-1CS] Rate limiting — 20 quotes/60000ms per IP, 10 max concurrent settlements
 [x402-1CS] Quote GC — sweep every 60000ms, grace period 300000ms
+[x402-1CS] CORS: open (reflect any origin); helmet: enabled
 
 ═══════════════════════════════════════════════════════
   x402-1CS Gateway running on http://localhost:3402
@@ -470,7 +482,7 @@ const client = new X402Client({
 
 ## 8. Running the test suite
 
-The project has 278 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
+The project has 283 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
 
 ### npm scripts
 
@@ -490,7 +502,7 @@ npm run format:check  # Prettier check
 npm test
 ```
 
-Runs 278 tests across 13 test files with fully mocked external dependencies. No API key, funds, or network access required. Covers:
+Runs 283 tests across 14 test files with fully mocked external dependencies (a 15th file, `live-1cs.test.ts`, runs only when `ONE_CLICK_JWT` is set). No API key, funds, or network access required. Covers:
 
 - **State store** (49 tests) — CRUD, TTL, concurrency, phase transitions
 - **Verifier** (34 tests) — EIP-3009 and Permit2 signature recovery, balance checks, nonce replay, timing
@@ -500,11 +512,12 @@ Runs 278 tests across 13 test files with fully mocked external dependencies. No 
 - **Types** (22 tests) — type guards, CAIP-2 parsing, error classes
 - **Client X402Client** (18 tests) — full protocol flow against real Express gateway with mocked chain deps
 - **E2E** (14 tests) — full gateway HTTP protocol compliance (402 -> sign -> 200)
+- **Mock integration** (14 tests) — multi-chain parametrized flow (NEAR, Arbitrum, Ethereum, Polygon, Stellar, Solana)
 - **Middleware** (12 tests) — Express middleware request/response handling, error mapping
 - **Client signer** (12 tests) — EIP-3009/Permit2 signature round-trips, nonce uniqueness, chain ID parsing
+- **Config** (12 tests) — Zod validation, defaults, environment loading, CORS allowlist parsing
 - **Provider pool** (11 tests) — RPC rotation, failover, health checks
-- **Config** (10 tests) — Zod validation, defaults, environment loading
-- **Mock integration** (14 tests) — multi-chain parametrized flow (NEAR, Arbitrum, Ethereum, Polygon, Stellar, Solana)
+- **Server** (3 tests) — CORS preflight, header exposure, origin allowlist enforcement
 
 ### Live 1CS API tests
 

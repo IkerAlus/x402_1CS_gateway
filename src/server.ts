@@ -10,7 +10,10 @@
  */
 
 import express from "express";
+import helmet from "helmet";
+import cors from "cors";
 import { loadConfigFromEnv } from "./config.js";
+import { buildCorsOptions } from "./cors-options.js";
 import { createStateStore } from "./store.js";
 import { ProviderPool } from "./provider-pool.js";
 import { createChainReader } from "./verifier.js";
@@ -111,6 +114,19 @@ async function main(): Promise<void> {
   // ── 6. Create Express app ──────────────────────────────────────────
   const app = express();
   app.set("trust proxy", 1); // Trust first proxy hop (nginx, Cloudflare, etc.)
+
+  // Security headers (X-Frame-Options, X-Content-Type-Options, CSP defaults, etc.).
+  app.use(helmet());
+
+  // CORS: expose x402 custom headers so browser clients can read them, and allow
+  // `PAYMENT-SIGNATURE` on incoming requests.
+  app.use(cors(buildCorsOptions(cfg)));
+  console.log(
+    `[x402-1CS] CORS: ${
+      cfg.allowedOrigins ? `allowlist=${cfg.allowedOrigins.join(",")}` : "open (reflect any origin)"
+    }; helmet: enabled`,
+  );
+
   app.use(express.json({ limit: "1mb" }));
 
   // Health check (no payment required)

@@ -151,4 +151,34 @@ describe("loadConfigFromEnv", () => {
   it("throws on missing required env vars", () => {
     expect(() => loadConfigFromEnv({} as NodeJS.ProcessEnv)).toThrow();
   });
+
+  it("parses ALLOWED_ORIGINS comma-separated list, trimming whitespace", () => {
+    const env = {
+      ...validEnv(),
+      ALLOWED_ORIGINS: "https://a.example, https://b.example ,https://c.example",
+    };
+    const config = loadConfigFromEnv(env as unknown as NodeJS.ProcessEnv);
+    expect(config.allowedOrigins).toEqual([
+      "https://a.example",
+      "https://b.example",
+      "https://c.example",
+    ]);
+  });
+
+  it("leaves allowedOrigins undefined when ALLOWED_ORIGINS is unset or empty", () => {
+    const unset = loadConfigFromEnv(validEnv() as unknown as NodeJS.ProcessEnv);
+    expect(unset.allowedOrigins).toBeUndefined();
+
+    const empty = loadConfigFromEnv({
+      ...validEnv(),
+      ALLOWED_ORIGINS: "",
+    } as unknown as NodeJS.ProcessEnv);
+    expect(empty.allowedOrigins).toBeUndefined();
+
+    const whitespaceOnly = loadConfigFromEnv({
+      ...validEnv(),
+      ALLOWED_ORIGINS: " , ,",
+    } as unknown as NodeJS.ProcessEnv);
+    expect(whitespaceOnly.allowedOrigins).toBeUndefined();
+  });
 });

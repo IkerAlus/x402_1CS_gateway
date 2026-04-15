@@ -70,6 +70,14 @@ export const GatewayConfigSchema = z.object({
   tokenVersion: z.string().default("2"),
   /** Whether the token supports EIP-3009 `transferWithAuthorization`. */
   tokenSupportsEip3009: z.boolean().default(true),
+
+  // ── CORS ───────────────────────────────────────────────────────────
+  /**
+   * Optional allowlist of origins permitted to call the gateway.
+   * Undefined means "reflect any origin" (equivalent to `*` but works with credentials).
+   * Required when a browser-based x402 client needs to read `PAYMENT-REQUIRED` / `PAYMENT-RESPONSE`.
+   */
+  allowedOrigins: z.array(z.string().min(1)).optional(),
 });
 
 /** Validated gateway configuration object. */
@@ -122,6 +130,7 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Gateway
     tokenSupportsEip3009: env.TOKEN_SUPPORTS_EIP3009
       ? env.TOKEN_SUPPORTS_EIP3009.toLowerCase() === "true"
       : undefined,
+    allowedOrigins: parseAllowedOrigins(env.ALLOWED_ORIGINS),
   };
 
   const config = GatewayConfigSchema.parse(raw);
@@ -130,6 +139,17 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Gateway
   validateRecipientFormat(config);
 
   return config;
+}
+
+/**
+ * Parse the `ALLOWED_ORIGINS` env var into a trimmed, non-empty list of origins.
+ * Returns undefined when the variable is missing or yields no origins, which the
+ * CORS middleware interprets as "reflect any origin".
+ */
+function parseAllowedOrigins(raw: string | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  const origins = raw.split(",").map((o) => o.trim()).filter(Boolean);
+  return origins.length > 0 ? origins : undefined;
 }
 
 /**

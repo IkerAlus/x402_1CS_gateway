@@ -1,6 +1,6 @@
 # x402-1CS Gateway — Test Results Report
 
-**Date:** 2026-04-15
+**Date:** 2026-04-17
 **Vitest version:** 2.1.9
 **Node environment:** node
 **Platform:** macOS (Darwin 24.5.0)
@@ -9,14 +9,14 @@
 
 ## 1. Mocked Test Suite (Unit + Integration)
 
-**Result: 283 passed | 0 failed | 17 skipped (live-only)**
-**Duration: ~1.8s total**
+**Result: 301 passed | 0 failed | 17 skipped (live-only)**
+**Duration: ~2.0s total**
 
 | File | Tests | Duration | Description |
 |------|------:|----------|-------------|
-| `src/store.test.ts` | 49 | 121ms | InMemoryStateStore CRUD, concurrency, TTL |
+| `src/store.test.ts` | 55 | 130ms | InMemoryStateStore CRUD, concurrency, TTL, listByPhase |
+| `src/settler.test.ts` | 45 | 580ms | Broadcast, polling, settlement, timeout, deposit-notify, **recovery** |
 | `src/verifier.test.ts` | 34 | 390ms | EIP-712 signature verification (EIP-3009 + Permit2) |
-| `src/settler.test.ts` | 33 | 142ms | Broadcast, polling, settlement, timeout, deposit-notify logging |
 | `src/quote-engine.test.ts` | 26 | 17ms | 1CS quote translation to x402 PaymentRequirements |
 | `src/rate-limiter.test.ts` | 23 | 142ms | Per-IP quote rate limiting, settlement limiter, quote GC |
 | `src/types.test.ts` | 22 | 17ms | Type guards, CAIP-2 parsing, error classes |
@@ -31,9 +31,9 @@
 
 ### Performance Notes
 
-- Total collection time: ~8.7s (TypeScript transform + module resolution)
-- Actual test execution: ~1.8s for 283 tests (~6.4ms per test average)
-- Slowest file: `src/verifier.test.ts` (390ms) — involves EIP-712 cryptographic signature verification
+- Total collection time: ~8.9s (TypeScript transform + module resolution)
+- Actual test execution: ~2.0s for 301 tests (~6.6ms per test average)
+- Slowest file: `src/settler.test.ts` (580ms) — includes recovery tests with async background tasks
 - All tests run in-process with mocked external dependencies (no network, no RPC)
 
 ---
@@ -88,17 +88,17 @@
 
 | Category | Tests | Pass Rate | Execution Time |
 |----------|------:|----------:|---------------:|
-| Unit + Integration (mocked) | 283 | 100% | ~1.8s |
+| Unit + Integration (mocked) | 301 | 100% | ~2.0s |
 | Live 1CS API | 17 | 100% | ~71s |
-| **Total** | **300** | **100%** | **~73s** |
+| **Total** | **318** | **100%** | **~73s** |
 
 ### Test distribution by module
 
 | Module | Mocked Tests | Live Tests | Total |
 |--------|------------:|----------:|------:|
-| State store | 49 | 1 | 50 |
+| State store | 55 | 1 | 56 |
 | Verifier | 34 | 0 | 34 |
-| Settler | 33 | 2 | 35 |
+| Settler | 45 | 2 | 47 |
 | Quote engine | 26 | 6 | 32 |
 | Rate limiter | 23 | 0 | 23 |
 | Types | 22 | 0 | 22 |

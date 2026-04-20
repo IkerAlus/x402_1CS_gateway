@@ -21,6 +21,7 @@ import {
   createBroadcastFn,
   createDepositNotifyFn,
   createStatusPollFn,
+  recoverInFlightSettlements,
 } from "./settler.js";
 import { createX402Middleware } from "./middleware.js";
 import type { MiddlewareDeps } from "./middleware.js";
@@ -110,6 +111,21 @@ async function main(): Promise<void> {
     quoteLimiter: rateLimiting.quoteLimiter,
     settlementLimiter: rateLimiting.settlementLimiter,
   };
+
+  // ── 5c. Recover in-flight settlements from previous run ────────────
+  const recovery = await recoverInFlightSettlements(
+    store,
+    depositNotifyFn,
+    statusPollFn,
+    rateLimiting.settlementLimiter,
+    cfg,
+  );
+  if (recovery.total > 0) {
+    console.log(
+      `[x402-1CS] Recovery: ${recovery.started}/${recovery.total} in-flight settlement(s) resumed` +
+        (recovery.skipped > 0 ? ` (${recovery.skipped} skipped — at capacity)` : ""),
+    );
+  }
 
   // ── 6. Create Express app ──────────────────────────────────────────
   const app = express();

@@ -1,7 +1,7 @@
 # x402-1CS Gateway — Production Readiness TODO
 
-**Date:** 2026-04-15
-**Based on:** Full codebase audit + 300 passing tests (283 mocked + 17 live) + typecheck clean
+**Date:** 2026-04-17
+**Based on:** Full codebase audit + 318 passing tests (301 mocked + 17 live) + typecheck clean
 **Target:** Prototype deployment for a small number of users
 
 ---
@@ -19,7 +19,8 @@
 | HTTP server timeouts (broadcast + polling budget) | Working |
 | Manual receipt polling (resilient to ethers `tx.wait()` stalls) | Working |
 | TypeScript compilation | Clean |
-| Test suite (295 tests) | 100% pass |
+| In-flight settlement recovery on restart | Working |
+| Test suite (318 tests) | 100% pass |
 | ESLint | 0 errors, 46 pre-existing warnings (intentional `no-console` + unused imports in tests) |
 
 ---
@@ -39,6 +40,7 @@
 - **Test-client deposit address** — `scripts/test-client.ts` now prints the deposit address in Steps 3 and 4 (success + failure paths) for easier correlation with gateway logs.
 - **`.env.stellar` preset** — New pre-filled env file for Base USDC → Stellar USDC merchant destinations.
 - **CORS + helmet** — Gateway now installs `helmet()` for baseline HTTP hardening and `cors()` with `exposedHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE"]` and `allowedHeaders: ["Content-Type", "PAYMENT-SIGNATURE"]` so browser-based x402 clients can read / send the custom headers. Origin allowlist is configurable via `ALLOWED_ORIGINS` env var; undefined means "reflect any origin". Startup log prints the active policy.
+- **In-flight settlement recovery** — On startup, `recoverInFlightSettlements()` scans the store for swaps stuck in `BROADCASTING`, `BROADCAST`, or `POLLING` phases and resumes them in the background. BROADCASTING swaps without an `originTxHash` are marked FAILED (safe default — no re-broadcast). BROADCAST swaps are re-notified to 1CS then polled. POLLING swaps resume polling directly. Recovery tasks hold `SettlementLimiter` slots; swaps that can't acquire a slot are left in place for the next restart. `listByPhase()` promoted to the `StateStore` interface. 18 new tests (12 recovery + 6 store).
 
 ---
 
@@ -69,19 +71,7 @@
 
 ---
 
-### 3. Recover in-flight settlements on restart
-
-**Risk:** Even with file persistence (#2), if the process restarts while a settlement is in `POLLING`, nobody resumes polling 1CS. The swap may complete on the 1CS side but the gateway never learns the result. Buyer funds stuck.
-
-**Fix:** On startup, scan the store for non-terminal phases (`BROADCASTING`, `BROADCAST`, `POLLING`) and either:
-- Resume polling for each (preferred)
-- Mark them `FAILED` and log for manual operator intervention
-
-**File:** `src/server.ts` (new startup recovery step), `src/settler.ts` (expose resume helper).
-
----
-
-### 4. Graceful shutdown — wait for in-flight settlements
+### 3. Graceful shutdown — wait for in-flight settlements
 
 **Risk:** Current shutdown (`src/server.ts:172-196`) calls `server.close()` then `process.exit(0)` after a 1-second grace period. If a settlement is in `POLLING` (can take up to 5 min), the Node.js process exits mid-way, corrupting state. Buyer paid but merchant never received.
 
@@ -103,7 +93,7 @@ setTimeout(() => process.exit(0), 1000).unref();
 
 ## STRONGLY RECOMMENDED — Important for a stable prototype
 
-### 5. Validate RPC reachability at startup
+### 4. Validate RPC reachability at startup
 
 **Current:** If all RPC URLs are unreachable, the server starts fine but every settlement fails at broadcast time. There's a facilitator balance check (`src/server.ts:62-79`) but it's non-blocking — only logs a warning.
 
@@ -113,7 +103,7 @@ setTimeout(() => process.exit(0), 1000).unref();
 
 ---
 
-### 6. Check 1CS JWT expiry at startup
+### 5. Check 1CS JWT expiry at startup
 
 **Current:** If the JWT expires, every quote request fails with 401 and there's no warning.
 
@@ -126,7 +116,7 @@ setTimeout(() => process.exit(0), 1000).unref();
 
 ---
 
-### 7. Add structured logging
+### 6. Add structured logging
 
 **Current:** All logging is bare `console.log`/`console.warn` — no timestamps, no correlation IDs, no JSON format. The `no-console` ESLint warnings flag 22 occurrences in `server.ts` alone.
 
@@ -140,7 +130,7 @@ setTimeout(() => process.exit(0), 1000).unref();
 
 ---
 
-### 8. Add gateway authentication
+### 7. Add gateway authentication
 
 **Current:** Anyone who discovers the gateway URL can trigger 402 flows, consuming 1CS quotes (rate-limited by your JWT).
 
@@ -153,7 +143,7 @@ setTimeout(() => process.exit(0), 1000).unref();
 
 ---
 
-### 9. Test coverage for recent additions
+### 8. Test coverage for recent additions
 
 **Current gaps:**
 - `waitForReceipt()` in `src/settler.ts` is not exported and has no direct tests. Needs: timeout after `maxAttempts`, reverted receipt (`status === 0`), provider error during polling.
@@ -167,57 +157,56 @@ setTimeout(() => process.exit(0), 1000).unref();
 
 ## NICE-TO-HAVE — Production hardening
 
-### 10. Prometheus `/metrics` endpoint
+### 9. Prometheus `/metrics` endpoint
 
 Expose settlement-latency histograms, error-rate counters, 1CS quote success rates, and active-settlement gauges for monitoring dashboards.
 
-### 11. Circuit breaker for RPC failures
+### 10. Circuit breaker for RPC failures
 
 Currently retries the RPC rotation blindly. A circuit breaker (e.g., `cockatiel`, `opossum`) would back off after N consecutive failures instead of hammering a dead RPC.
 
-### 12. Automatic buyer refund on 1CS failure
+### 11. Automatic buyer refund on 1CS failure
 
 When 1CS reports `FAILED` after the on-chain `transferWithAuthorization` succeeded, the buyer's USDC is at the 1CS deposit address. Currently, refunds go to `GATEWAY_REFUND_ADDRESS` and the operator must manually return funds. Automate this path.
 
-### 13. Request correlation IDs
+### 12. Request correlation IDs
 
 Generate a unique ID per request (`X-Request-Id` header), propagate through all logs and state transitions. Essential for distributed tracing.
 
-### 14. Replace `sql.js` with `better-sqlite3`
+### 13. Replace `sql.js` with `better-sqlite3`
 
 `sql.js` is pure-JS SQLite (slower, larger memory footprint). `better-sqlite3` is a native binding — synchronous, faster, battle-tested for Node.js server workloads.
 
-### 15. Key rotation without restart
+### 14. Key rotation without restart
 
 Currently, changing the facilitator private key requires a full service restart. Add a SIGHUP handler or admin endpoint that reloads the key from the secrets manager.
 
-### 16. Health endpoint authentication
+### 15. Health endpoint authentication
 
 `/health` currently exposes in-flight settlement count, rate-limiter state, and provider health to anyone. Consider requiring an API key or restricting access by IP.
 
-### 17. Lint cleanup
+### 16. Lint cleanup
 
-46 ESLint warnings — mostly intentional `no-console` in `server.ts` (22) and unused test imports (14). Fix the unused-import warnings in a single cleanup pass (they're easy wins). Leave the `no-console` warnings — they're intentional until structured logging (#7) lands.
+46 ESLint warnings — mostly intentional `no-console` in `server.ts` (22) and unused test imports (14). Fix the unused-import warnings in a single cleanup pass (they're easy wins). Leave the `no-console` warnings — they're intentional until structured logging (#6) lands.
 
 ---
 
 ## Priority Roadmap
 
 ```
-Phase 1 — Go-live minimum (blockers 1-4)
+Phase 1 — Go-live minimum (blockers 1-3)
   ├── #1  TLS termination           (~30 min, infra)
   ├── #2  File-based persistence    (~30 min)
-  ├── #4  Graceful shutdown (wait)  (~1-2 hrs)
-  └── #3  In-flight recovery        (~2-3 hrs)
+  └── #3  Graceful shutdown (wait)  (~1-2 hrs)
 
-Phase 2 — Stable prototype (items 5-9)
-  ├── #5  RPC startup validation    (~20 min)
-  ├── #6  JWT expiry check          (~20 min)
-  ├── #8  Gateway authentication    (~1 hr)
-  ├── #9  Test coverage for new code (~2 hrs)
-  └── #7  Structured logging        (~2 hrs)
+Phase 2 — Stable prototype (items 4-8)
+  ├── #4  RPC startup validation    (~20 min)
+  ├── #5  JWT expiry check          (~20 min)
+  ├── #7  Gateway authentication    (~1 hr)
+  ├── #8  Test coverage for new code (~2 hrs)
+  └── #6  Structured logging        (~2 hrs)
 
-Phase 3 — Production hardening (items 10-17)
+Phase 3 — Production hardening (items 9-16)
   └── As needed based on scale and operational experience
 ```
 

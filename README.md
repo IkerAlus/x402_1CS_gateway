@@ -482,7 +482,7 @@ const client = new X402Client({
 
 ## 8. Running the test suite
 
-The project has 283 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
+The project has 301 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
 
 ### npm scripts
 
@@ -502,11 +502,11 @@ npm run format:check  # Prettier check
 npm test
 ```
 
-Runs 283 tests across 14 test files with fully mocked external dependencies (a 15th file, `live-1cs.test.ts`, runs only when `ONE_CLICK_JWT` is set). No API key, funds, or network access required. Covers:
+Runs 301 tests across 14 test files with fully mocked external dependencies (a 15th file, `live-1cs.test.ts`, runs only when `ONE_CLICK_JWT` is set). No API key, funds, or network access required. Covers:
 
-- **State store** (49 tests) — CRUD, TTL, concurrency, phase transitions
+- **State store** (55 tests) — CRUD, TTL, concurrency, phase transitions, listByPhase
+- **Settler** (45 tests) — broadcast, deposit notification, status polling, timeout, **in-flight recovery**
 - **Verifier** (34 tests) — EIP-3009 and Permit2 signature recovery, balance checks, nonce replay, timing
-- **Settler** (33 tests) — broadcast, deposit notification, status polling, timeout handling, deposit-notify logging
 - **Quote engine** (26 tests) — quote building, deadline validation, fee calculation
 - **Rate limiter** (23 tests) — per-IP quote limiting, settlement concurrency cap, quote garbage collection
 - **Types** (22 tests) — type guards, CAIP-2 parsing, error classes

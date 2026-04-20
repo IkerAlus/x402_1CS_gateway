@@ -443,6 +443,8 @@ export interface StateStore {
   update(depositAddress: string, patch: Partial<SwapState>): Promise<void>;
   /** List deposit addresses whose `createdAt` is older than the given threshold. */
   listExpired(olderThanMs: number): Promise<string[]>;
+  /** List all swap states currently in a given phase. */
+  listByPhase(phase: SwapPhase): Promise<SwapState[]>;
   /** Delete a swap state by deposit address. */
   delete(depositAddress: string): Promise<void>;
   /** Gracefully close the store, flushing pending writes and releasing resources. */

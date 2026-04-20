@@ -417,6 +417,17 @@ export class InMemoryStateStore implements StateStore {
   }
 
   // eslint-disable-next-line @typescript-eslint/require-await
+  async listByPhase(phase: SwapPhase): Promise<SwapState[]> {
+    const result: SwapState[] = [];
+    for (const state of this.states.values()) {
+      if (state.phase === phase) {
+        result.push(structuredClone(state));
+      }
+    }
+    return result;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
   async delete(depositAddress: string): Promise<void> {
     this.states.delete(depositAddress);
   }

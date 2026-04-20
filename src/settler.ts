@@ -25,6 +25,7 @@
 import { ethers } from "ethers";
 import type { GatewayConfig } from "./config.js";
 import { configureOneClickSdk } from "./quote-engine.js";
+import type { SettlementLimiter } from "./rate-limiter.js";
 import type {
   StateStore,
   SwapState,
@@ -414,6 +415,175 @@ export async function settlePayment(
   });
 
   return response;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Startup recovery — resume in-flight settlements after restart
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Recover a single swap that was in-flight when the process last stopped.
+ *
+ * Recovery strategy per phase:
+ * - **BROADCASTING without `originTxHash`** — mark FAILED (cannot safely re-broadcast)
+ * - **BROADCASTING with `originTxHash`** — treat as BROADCAST (fall through)
+ * - **BROADCAST** — re-notify 1CS (best-effort), then poll
+ * - **POLLING** — resume polling directly
+ *
+ * This function never throws — all errors are caught and the swap is marked FAILED.
+ */
+export async function recoverSettlement(
+  state: SwapState,
+  store: StateStore,
+  depositNotifyFn: DepositNotifyFn,
+  statusPollFn: StatusPollFn,
+  cfg: GatewayConfig,
+): Promise<void> {
+  const addr = state.depositAddress;
+  const phase = state.phase;
+
+  try {
+    // ── BROADCASTING — can only recover if txHash was persisted ────────
+    if (phase === "BROADCASTING") {
+      if (!state.originTxHash) {
+        console.warn(
+          `[x402] Recovery: ${addr} stuck in BROADCASTING with no txHash — marking FAILED`,
+        );
+        await failSwap(store, addr, "Recovery: no txHash after BROADCASTING — cannot safely re-broadcast");
+        return;
+      }
+      // txHash exists → process died between broadcast confirmation and
+      // the state update to BROADCAST. Treat as BROADCAST and fall through.
+      console.log(
+        `[x402] Recovery: ${addr} in BROADCASTING with txHash=${state.originTxHash} — treating as BROADCAST`,
+      );
+      await store.update(addr, { phase: "BROADCAST" });
+    }
+
+    // ── BROADCAST — re-notify 1CS, then start polling ─────────────────
+    if (phase === "BROADCAST" || (phase === "BROADCASTING" && state.originTxHash)) {
+      configureOneClickSdk(cfg);
+      try {
+        const notifyResult = await depositNotifyFn(state.originTxHash!, addr);
+        console.log(
+          `[x402] Recovery: ${addr} re-notified 1CS (status=${notifyResult.status})`,
+        );
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[x402] Recovery: ${addr} deposit-notify failed (${errMsg}) — continuing to poll`,
+        );
+      }
+      await store.update(addr, { phase: "POLLING" });
+    }
+
+    // ── POLLING — resume polling for terminal status ──────────────────
+    configureOneClickSdk(cfg);
+    console.log(
+      `[x402] Recovery: ${addr} resuming 1CS polling (budget: ${Math.round(cfg.maxPollTimeMs / 1000)}s)...`,
+    );
+
+    const pollResult = await pollUntilTerminal(addr, statusPollFn, store, cfg);
+
+    // Build a recovery-mode settlement response (no BroadcastResult available)
+    const extra: CrossChainSettlementExtra = {
+      settlementType: "crosschain-1cs",
+      destinationTxHashes: pollResult.swapDetails?.destinationChainTxHashes,
+      destinationChain: extractDestinationChain(cfg.merchantAssetOut),
+      destinationAmount: pollResult.swapDetails?.amountOut,
+      destinationAsset: cfg.merchantAssetOut,
+      swapStatus: pollResult.status,
+      correlationId: state.quoteResponse.correlationId,
+    };
+
+    const response: SettlementResponseRecord = {
+      success: true,
+      payer: state.signerAddress,
+      transaction: state.originTxHash ?? "unknown",
+      network: cfg.originNetwork,
+      amount: state.paymentRequirements.amount,
+      extra,
+    };
+
+    await store.update(addr, {
+      phase: "SETTLED",
+      settlementResponse: response,
+      oneClickStatus: pollResult.status,
+      settledAt: Date.now(),
+    });
+
+    console.log(
+      `[x402] Recovery: ✅ ${addr} settled → 1CS status=${pollResult.status}`,
+    );
+  } catch (err) {
+    // Any error (timeout, 1CS failure, unexpected) → mark FAILED
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[x402] Recovery: ❌ ${addr} failed — ${errMsg}`);
+    await failSwap(store, addr, `Recovery failed: ${errMsg}`);
+  }
+}
+
+/**
+ * Scan the store for in-flight settlements and resume them in the background.
+ *
+ * Called once during server startup, after dependencies are wired but before
+ * the HTTP server begins accepting requests. Individual recovery tasks run
+ * concurrently in the background and hold {@link SettlementLimiter} slots
+ * for their duration.
+ *
+ * Swaps that cannot acquire a limiter slot are left in place (not marked FAILED)
+ * and will be recovered on the next restart.
+ *
+ * @returns Counts of total stuck swaps found, how many were started, and how many skipped.
+ */
+export async function recoverInFlightSettlements(
+  store: StateStore,
+  depositNotifyFn: DepositNotifyFn,
+  statusPollFn: StatusPollFn,
+  settlementLimiter: SettlementLimiter | undefined,
+  cfg: GatewayConfig,
+): Promise<{ total: number; started: number; skipped: number }> {
+  const [broadcasting, broadcast, polling] = await Promise.all([
+    store.listByPhase("BROADCASTING"),
+    store.listByPhase("BROADCAST"),
+    store.listByPhase("POLLING"),
+  ]);
+
+  const stuckSwaps = [...broadcasting, ...broadcast, ...polling];
+  const total = stuckSwaps.length;
+
+  if (total === 0) {
+    return { total: 0, started: 0, skipped: 0 };
+  }
+
+  console.log(
+    `[x402] Recovery: found ${total} in-flight settlement(s) ` +
+      `(BROADCASTING=${broadcasting.length}, BROADCAST=${broadcast.length}, POLLING=${polling.length})`,
+  );
+
+  let started = 0;
+  let skipped = 0;
+
+  for (const state of stuckSwaps) {
+    // Respect the settlement limiter — don't starve new requests
+    if (settlementLimiter && !settlementLimiter.acquire()) {
+      console.warn(
+        `[x402] Recovery: skipping ${state.depositAddress} — at settlement capacity`,
+      );
+      skipped++;
+      continue;
+    }
+
+    started++;
+
+    // Fire-and-forget: recovery runs in the background
+    void recoverSettlement(state, store, depositNotifyFn, statusPollFn, cfg)
+      .finally(() => {
+        settlementLimiter?.release();
+      });
+  }
+
+  return { total, started, skipped };
 }
 
 // ═══════════════════════════════════════════════════════════════════════

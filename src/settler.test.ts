@@ -13,6 +13,8 @@ import {
   pollUntilTerminal,
   buildSettlementResponse,
   extractDestinationChain,
+  recoverSettlement,
+  recoverInFlightSettlements,
   type BroadcastFn,
   type BroadcastResult,
   type DepositNotifyFn,
@@ -20,6 +22,7 @@ import {
   type StatusPollFn,
   type StatusPollResult,
 } from "./settler.js";
+import { SettlementLimiter } from "./rate-limiter.js";
 import { InMemoryStateStore } from "./store.js";
 import type {
   SwapState,
@@ -906,5 +909,285 @@ describe("extractDestinationChain", () => {
   it("should pass through CAIP-2 identifiers", () => {
     expect(extractDestinationChain("eip155:8453")).toBe("eip155");
     expect(extractDestinationChain("eip155:1")).toBe("eip155");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// recoverSettlement — single-swap recovery
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("recoverSettlement", () => {
+  let store: InMemoryStateStore;
+  let cfg: GatewayConfig;
+
+  beforeEach(() => {
+    store = new InMemoryStateStore();
+    cfg = testConfig({
+      pollIntervalBaseMs: 1,
+      pollIntervalMaxMs: 5,
+      maxPollTimeMs: 5000,
+    });
+  });
+
+  /** Create a state stuck in a given phase. */
+  function makeStuckState(
+    phase: "BROADCASTING" | "BROADCAST" | "POLLING",
+    extra: Partial<SwapState> = {},
+  ): SwapState {
+    return {
+      depositAddress: TEST_DEPOSIT_ADDRESS,
+      quoteResponse: makeQuoteResponse(),
+      paymentRequirements: makeRequirements(),
+      paymentPayload: makeEIP3009Payload(),
+      signerAddress: TEST_SIGNER_ADDRESS,
+      phase,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...extra,
+    };
+  }
+
+  it("should recover a POLLING swap by resuming polling", async () => {
+    const state = makeStuckState("POLLING", { originTxHash: TEST_TX_HASH });
+    await store.create(TEST_DEPOSIT_ADDRESS, state);
+
+    const notify = mockDepositNotifyFn();
+    const poll = mockStatusPollFn();
+
+    await recoverSettlement(state, store, notify, poll, cfg);
+
+    const final = await store.get(TEST_DEPOSIT_ADDRESS);
+    expect(final!.phase).toBe("SETTLED");
+    expect(final!.settlementResponse?.success).toBe(true);
+    expect(final!.settlementResponse?.transaction).toBe(TEST_TX_HASH);
+    // depositNotifyFn should NOT be called for POLLING phase
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("should recover a BROADCAST swap by re-notifying then polling", async () => {
+    const state = makeStuckState("BROADCAST", { originTxHash: TEST_TX_HASH });
+    await store.create(TEST_DEPOSIT_ADDRESS, state);
+
+    const notify = mockDepositNotifyFn();
+    const poll = mockStatusPollFn();
+
+    await recoverSettlement(state, store, notify, poll, cfg);
+
+    // Should have called depositNotifyFn
+    expect(notify).toHaveBeenCalledWith(TEST_TX_HASH, TEST_DEPOSIT_ADDRESS);
+
+    const final = await store.get(TEST_DEPOSIT_ADDRESS);
+    expect(final!.phase).toBe("SETTLED");
+    expect(final!.settlementResponse?.success).toBe(true);
+  });
+
+  it("should recover BROADCAST even if deposit-notify fails", async () => {
+    const state = makeStuckState("BROADCAST", { originTxHash: TEST_TX_HASH });
+    await store.create(TEST_DEPOSIT_ADDRESS, state);
+
+    const notify = vi.fn().mockRejectedValue(new Error("1CS unavailable"));
+    const poll = mockStatusPollFn();
+
+    await recoverSettlement(state, store, notify, poll, cfg);
+
+    const final = await store.get(TEST_DEPOSIT_ADDRESS);
+    expect(final!.phase).toBe("SETTLED");
+  });
+
+  it("should mark BROADCASTING without txHash as FAILED", async () => {
+    const state = makeStuckState("BROADCASTING"); // no originTxHash
+    await store.create(TEST_DEPOSIT_ADDRESS, state);
+
+    const notify = mockDepositNotifyFn();
+    const poll = mockStatusPollFn();
+
+    await recoverSettlement(state, store, notify, poll, cfg);
+
+    const final = await store.get(TEST_DEPOSIT_ADDRESS);
+    expect(final!.phase).toBe("FAILED");
+    expect(final!.error).toContain("cannot safely re-broadcast");
+    // Neither notify nor poll should be called
+    expect(notify).not.toHaveBeenCalled();
+    expect(poll).not.toHaveBeenCalled();
+  });
+
+  it("should recover BROADCASTING with txHash as if BROADCAST", async () => {
+    const state = makeStuckState("BROADCASTING", { originTxHash: TEST_TX_HASH });
+    await store.create(TEST_DEPOSIT_ADDRESS, state);
+
+    const notify = mockDepositNotifyFn();
+    const poll = mockStatusPollFn();
+
+    await recoverSettlement(state, store, notify, poll, cfg);
+
+    expect(notify).toHaveBeenCalledWith(TEST_TX_HASH, TEST_DEPOSIT_ADDRESS);
+
+    const final = await store.get(TEST_DEPOSIT_ADDRESS);
+    expect(final!.phase).toBe("SETTLED");
+    expect(final!.settlementResponse?.transaction).toBe(TEST_TX_HASH);
+  });
+
+  it("should mark FAILED on poll timeout", async () => {
+    const state = makeStuckState("POLLING", { originTxHash: TEST_TX_HASH });
+    await store.create(TEST_DEPOSIT_ADDRESS, state);
+
+    const shortCfg = testConfig({
+      pollIntervalBaseMs: 1,
+      pollIntervalMaxMs: 2,
+      maxPollTimeMs: 10, // Very short — will timeout
+    });
+
+    // Poll always returns non-terminal status
+    const poll = vi.fn().mockResolvedValue({
+      status: "PROCESSING" as OneClickStatus,
+    } satisfies StatusPollResult);
+
+    await recoverSettlement(state, store, mockDepositNotifyFn(), poll, shortCfg);
+
+    const final = await store.get(TEST_DEPOSIT_ADDRESS);
+    expect(final!.phase).toBe("FAILED");
+    expect(final!.error).toContain("Recovery failed");
+  });
+
+  it("should mark FAILED if 1CS reports FAILED", async () => {
+    const state = makeStuckState("POLLING", { originTxHash: TEST_TX_HASH });
+    await store.create(TEST_DEPOSIT_ADDRESS, state);
+
+    const poll = vi.fn().mockResolvedValue({
+      status: "FAILED" as OneClickStatus,
+    } satisfies StatusPollResult);
+
+    await recoverSettlement(state, store, mockDepositNotifyFn(), poll, cfg);
+
+    const final = await store.get(TEST_DEPOSIT_ADDRESS);
+    expect(final!.phase).toBe("FAILED");
+    expect(final!.error).toContain("Recovery failed");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// recoverInFlightSettlements — startup orchestrator
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("recoverInFlightSettlements", () => {
+  let store: InMemoryStateStore;
+  let cfg: GatewayConfig;
+
+  beforeEach(() => {
+    store = new InMemoryStateStore();
+    cfg = testConfig({
+      pollIntervalBaseMs: 1,
+      pollIntervalMaxMs: 5,
+      maxPollTimeMs: 5000,
+    });
+  });
+
+  function makeStuckState(
+    depositAddress: string,
+    phase: "BROADCASTING" | "BROADCAST" | "POLLING",
+    extra: Partial<SwapState> = {},
+  ): SwapState {
+    return {
+      depositAddress,
+      quoteResponse: makeQuoteResponse({ correlationId: `corr-${depositAddress}` }),
+      paymentRequirements: makeRequirements({ payTo: depositAddress }),
+      paymentPayload: makeEIP3009Payload(),
+      signerAddress: TEST_SIGNER_ADDRESS,
+      phase,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...extra,
+    };
+  }
+
+  it("should return zeros when no stuck swaps exist", async () => {
+    const result = await recoverInFlightSettlements(
+      store, mockDepositNotifyFn(), mockStatusPollFn(), undefined, cfg,
+    );
+    expect(result).toEqual({ total: 0, started: 0, skipped: 0 });
+  });
+
+  it("should find and start recovery across all phases", async () => {
+    const s1 = makeStuckState("0xA", "BROADCASTING"); // no txHash → FAILED
+    const s2 = makeStuckState("0xB", "BROADCAST", { originTxHash: "0xTX_B" });
+    const s3 = makeStuckState("0xC", "POLLING", { originTxHash: "0xTX_C" });
+
+    await store.create("0xA", s1);
+    await store.create("0xB", s2);
+    await store.create("0xC", s3);
+
+    const result = await recoverInFlightSettlements(
+      store, mockDepositNotifyFn(), mockStatusPollFn(), undefined, cfg,
+    );
+    expect(result.total).toBe(3);
+    expect(result.started).toBe(3);
+    expect(result.skipped).toBe(0);
+
+    // Wait briefly for background recovery to finish
+    await new Promise((r) => setTimeout(r, 200));
+
+    // 0xA: FAILED (no txHash)
+    expect((await store.get("0xA"))!.phase).toBe("FAILED");
+    // 0xB: SETTLED (notify + poll)
+    expect((await store.get("0xB"))!.phase).toBe("SETTLED");
+    // 0xC: SETTLED (poll only)
+    expect((await store.get("0xC"))!.phase).toBe("SETTLED");
+  });
+
+  it("should respect settlement limiter capacity", async () => {
+    const s1 = makeStuckState("0xA", "POLLING", { originTxHash: "0xTX_A" });
+    const s2 = makeStuckState("0xB", "POLLING", { originTxHash: "0xTX_B" });
+    const s3 = makeStuckState("0xC", "POLLING", { originTxHash: "0xTX_C" });
+
+    await store.create("0xA", s1);
+    await store.create("0xB", s2);
+    await store.create("0xC", s3);
+
+    // Limiter with capacity 1, pre-acquire the only slot
+    const limiter = new SettlementLimiter(1);
+    limiter.acquire(); // fills up
+
+    const result = await recoverInFlightSettlements(
+      store, mockDepositNotifyFn(), mockStatusPollFn(), limiter, cfg,
+    );
+
+    expect(result.total).toBe(3);
+    expect(result.started).toBe(0);
+    expect(result.skipped).toBe(3);
+  });
+
+  it("should release limiter slots after recovery completes", async () => {
+    const s1 = makeStuckState("0xA", "POLLING", { originTxHash: "0xTX_A" });
+    await store.create("0xA", s1);
+
+    const limiter = new SettlementLimiter(5);
+
+    await recoverInFlightSettlements(
+      store, mockDepositNotifyFn(), mockStatusPollFn(), limiter, cfg,
+    );
+
+    // Initially 1 slot taken
+    expect(limiter.current).toBe(1);
+
+    // Wait for recovery to finish
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Slot released
+    expect(limiter.current).toBe(0);
+  });
+
+  it("should ignore QUOTED, VERIFIED, SETTLED, FAILED, EXPIRED phases", async () => {
+    // Create states in non-recoverable phases directly (store.create is idempotent)
+    const base = makeStuckState("0xA", "POLLING"); // template for field shape
+    await store.create("0xA", { ...base, depositAddress: "0xA", phase: "QUOTED" });
+    await store.create("0xB", { ...base, depositAddress: "0xB", phase: "VERIFIED" });
+    await store.create("0xC", { ...base, depositAddress: "0xC", phase: "SETTLED" });
+    await store.create("0xD", { ...base, depositAddress: "0xD", phase: "FAILED" });
+    await store.create("0xE", { ...base, depositAddress: "0xE", phase: "EXPIRED" });
+
+    const result = await recoverInFlightSettlements(
+      store, mockDepositNotifyFn(), mockStatusPollFn(), undefined, cfg,
+    );
+    expect(result.total).toBe(0);
   });
 });

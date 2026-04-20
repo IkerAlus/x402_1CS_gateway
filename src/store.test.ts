@@ -306,6 +306,51 @@ function describeStore(
       expect(expired).toEqual([]);
     });
 
+    // ── listByPhase ─────────────────────────────────────────────────
+
+    it("should list states matching the given phase", async () => {
+      await store.create("0xA", makeSwapState({ depositAddress: "0xA", phase: "QUOTED" }));
+      await store.create("0xB", makeSwapState({ depositAddress: "0xB", phase: "QUOTED" }));
+      // Transition 0xB to BROADCASTING via valid path
+      await store.update("0xB", { phase: "VERIFIED" });
+      await store.update("0xB", { phase: "BROADCASTING" });
+      await store.create("0xC", makeSwapState({ depositAddress: "0xC", phase: "QUOTED" }));
+      await store.update("0xC", { phase: "VERIFIED" });
+      await store.update("0xC", { phase: "BROADCASTING" });
+      await store.update("0xC", {
+        phase: "BROADCAST",
+        originTxHash: "0xTX123",
+      });
+      await store.update("0xC", { phase: "POLLING" });
+
+      const broadcasting = await store.listByPhase("BROADCASTING");
+      expect(broadcasting).toHaveLength(1);
+      expect(broadcasting[0]!.depositAddress).toBe("0xB");
+
+      const polling = await store.listByPhase("POLLING");
+      expect(polling).toHaveLength(1);
+      expect(polling[0]!.depositAddress).toBe("0xC");
+
+      const quoted = await store.listByPhase("QUOTED");
+      expect(quoted).toHaveLength(1);
+      expect(quoted[0]!.depositAddress).toBe("0xA");
+    });
+
+    it("should return empty array when no states match the phase", async () => {
+      await store.create("0xA", makeSwapState({ depositAddress: "0xA", phase: "QUOTED" }));
+      const result = await store.listByPhase("POLLING");
+      expect(result).toEqual([]);
+    });
+
+    it("should return deep copies from listByPhase", async () => {
+      await store.create("0xA", makeSwapState({ depositAddress: "0xA", phase: "QUOTED" }));
+      const [first] = await store.listByPhase("QUOTED");
+      first!.depositAddress = "MUTATED";
+
+      const [second] = await store.listByPhase("QUOTED");
+      expect(second!.depositAddress).toBe("0xA");
+    });
+
     // ── delete ────────────────────────────────────────────────────────
 
     it("should delete a swap state", async () => {

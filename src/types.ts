@@ -338,6 +338,17 @@ export interface RefundInfo {
 // @see Research plan §8 — Error handling and edge cases
 // ═══════════════════════════════════════════════════════════════════════
 
+/**
+ * Structured diagnostic bag attached to a {@link GatewayError} for
+ * server-side logs only. Consumed by `middleware.logServerError` to help
+ * operators understand what went wrong (e.g. the request fields that
+ * upstream rejected, plus `hints[]` from `diagnoseQuoteRequest`).
+ *
+ * **Never** reaches the client — the middleware's sanitized response path
+ * reads only `err.code` and maps to a fixed user-facing message.
+ */
+export type ErrorContext = Record<string, unknown>;
+
 /** Base class for all gateway-specific errors. */
 export class GatewayError extends Error {
   constructor(
@@ -345,6 +356,8 @@ export class GatewayError extends Error {
     public readonly code: string,
     /** HTTP status code the middleware should return for this error. */
     public readonly httpStatus: number = 500,
+    /** Optional structured diagnostic data — server logs only. */
+    public readonly context?: ErrorContext,
   ) {
     super(message);
     this.name = "GatewayError";
@@ -353,40 +366,40 @@ export class GatewayError extends Error {
 
 /** 1CS returned an error for the quote request (400 → gateway returns 503). */
 export class QuoteUnavailableError extends GatewayError {
-  constructor(message: string) {
-    super(message, "QUOTE_UNAVAILABLE", 503);
+  constructor(message: string, context?: ErrorContext) {
+    super(message, "QUOTE_UNAVAILABLE", 503, context);
     this.name = "QuoteUnavailableError";
   }
 }
 
 /** 1CS rejected authentication (401 → gateway returns 503). */
 export class AuthenticationError extends GatewayError {
-  constructor(message: string) {
-    super(message, "AUTHENTICATION_ERROR", 503);
+  constructor(message: string, context?: ErrorContext) {
+    super(message, "AUTHENTICATION_ERROR", 503, context);
     this.name = "AuthenticationError";
   }
 }
 
 /** 1CS is unreachable or returned 5xx (→ gateway returns 503). */
 export class ServiceUnavailableError extends GatewayError {
-  constructor(message: string) {
-    super(message, "SERVICE_UNAVAILABLE", 503);
+  constructor(message: string, context?: ErrorContext) {
+    super(message, "SERVICE_UNAVAILABLE", 503, context);
     this.name = "ServiceUnavailableError";
   }
 }
 
 /** The 1CS quote deadline is too short to safely complete the flow (→ 503). */
 export class DeadlineTooShortError extends GatewayError {
-  constructor(message: string) {
-    super(message, "DEADLINE_TOO_SHORT", 503);
+  constructor(message: string, context?: ErrorContext) {
+    super(message, "DEADLINE_TOO_SHORT", 503, context);
     this.name = "DeadlineTooShortError";
   }
 }
 
 /** Facilitator wallet doesn't have enough native token to pay gas (→ 503). */
 export class InsufficientGasError extends GatewayError {
-  constructor(message: string) {
-    super(message, "INSUFFICIENT_GAS", 503);
+  constructor(message: string, context?: ErrorContext) {
+    super(message, "INSUFFICIENT_GAS", 503, context);
     this.name = "InsufficientGasError";
   }
 }
@@ -441,8 +454,15 @@ export interface StateStore {
    * transition is legal before writing (optimistic locking).
    */
   update(depositAddress: string, patch: Partial<SwapState>): Promise<void>;
-  /** List deposit addresses whose `createdAt` is older than the given threshold. */
-  listExpired(olderThanMs: number): Promise<string[]>;
+  /**
+   * List deposit addresses whose `createdAt` is older than the given threshold.
+   *
+   * If `phases` is provided, only addresses currently in one of those phases
+   * are returned. If omitted (or empty), all phases are included (legacy
+   * behavior). The quote garbage collector uses this to avoid deleting
+   * in-flight settlements — see {@link GC_ELIGIBLE_PHASES}.
+   */
+  listExpired(olderThanMs: number, phases?: ReadonlySet<SwapPhase>): Promise<string[]>;
   /** List all swap states currently in a given phase. */
   listByPhase(phase: SwapPhase): Promise<SwapState[]>;
   /** Delete a swap state by deposit address. */
@@ -460,6 +480,21 @@ export const TERMINAL_STATUSES: ReadonlySet<OneClickStatus> = new Set([
   "SUCCESS",
   "FAILED",
   "REFUNDED",
+]);
+
+/**
+ * Phases that the quote garbage collector is allowed to delete.
+ *
+ * In-flight phases (`VERIFIED`, `BROADCASTING`, `BROADCAST`, `POLLING`) are
+ * deliberately excluded: deleting a settlement mid-flight orphans the buyer's
+ * HTTP request and silently breaks status reporting, even though 1CS itself
+ * completes the swap on-chain independently.
+ */
+export const GC_ELIGIBLE_PHASES: ReadonlySet<SwapPhase> = new Set([
+  "QUOTED",
+  "EXPIRED",
+  "SETTLED",
+  "FAILED",
 ]);
 
 /** Allowed phase transitions — used by the state store for optimistic locking. */

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { GatewayConfigSchema, loadConfigFromEnv } from "./config.js";
 
 /** Minimal valid env that satisfies every required field. */
@@ -180,5 +180,88 @@ describe("loadConfigFromEnv", () => {
       ALLOWED_ORIGINS: " , ,",
     } as unknown as NodeJS.ProcessEnv);
     expect(whitespaceOnly.allowedOrigins).toBeUndefined();
+  });
+
+  describe("validateRecipientFormat — address-mistake warnings", () => {
+    let warnSpy: ReturnType<typeof vi.spyOn>;
+
+    afterEach(() => {
+      warnSpy?.mockRestore();
+    });
+
+    /** Capture all `console.warn` args as one joined string for assertions. */
+    function loadAndCaptureWarnings(
+      env: Record<string, string>,
+    ): string {
+      warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      loadConfigFromEnv(env as unknown as NodeJS.ProcessEnv);
+      return warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    }
+
+    it("warns on NEAR recipient with wrong TLA (.nea instead of .near)", () => {
+      const logged = loadAndCaptureWarnings({
+        ...validEnv(),
+        MERCHANT_RECIPIENT: "merchantx402.nea",
+        MERCHANT_ASSET_OUT: "nep141:usdt.tether-token.near",
+      });
+      expect(logged).toContain("merchantx402.nea");
+      expect(logged.toLowerCase()).toContain("not appear to be a valid near account");
+    });
+
+    it("warns on leading whitespace in recipient", () => {
+      const logged = loadAndCaptureWarnings({
+        ...validEnv(),
+        MERCHANT_RECIPIENT: " merchantx402.near",
+        MERCHANT_ASSET_OUT: "nep141:usdt.tether-token.near",
+      });
+      expect(logged).toContain("whitespace");
+    });
+
+    it("warns on inline comment leaking into MERCHANT_ASSET_OUT", () => {
+      const logged = loadAndCaptureWarnings({
+        ...validEnv(),
+        MERCHANT_RECIPIENT: "merchantx402.near",
+        MERCHANT_ASSET_OUT: "nep141:usdt.tether-token.near #nep141:gnosis-0xabc.omft.near",
+      });
+      expect(logged).toContain("#");
+    });
+
+    it("warns on EVM address for a NEAR-native destination", () => {
+      const logged = loadAndCaptureWarnings({
+        ...validEnv(),
+        MERCHANT_RECIPIENT: "0x1234567890abcdef1234567890abcdef12345678",
+        MERCHANT_ASSET_OUT: "nep141:usdt.tether-token.near",
+      });
+      expect(logged.toLowerCase()).toContain("evm");
+      expect(logged.toLowerCase()).toContain("near");
+    });
+
+    it("warns on non-EVM recipient for an EVM-bridged destination", () => {
+      const logged = loadAndCaptureWarnings({
+        ...validEnv(),
+        MERCHANT_RECIPIENT: "some.near",
+        MERCHANT_ASSET_OUT: "nep141:arb-0xaf88d065e77c8cC2239327C5EDb3A432268e5831.omft.near",
+      });
+      expect(logged.toLowerCase()).toContain("evm address");
+      expect(logged).toContain("arb");
+    });
+
+    it("does not warn on a valid NEAR recipient + NEAR destination", () => {
+      const logged = loadAndCaptureWarnings({
+        ...validEnv(),
+        MERCHANT_RECIPIENT: "merchantx402.near",
+        MERCHANT_ASSET_OUT: "nep141:usdt.tether-token.near",
+      });
+      expect(logged).toBe("");
+    });
+
+    it("does not warn on a valid EVM recipient + EVM-bridged destination", () => {
+      const logged = loadAndCaptureWarnings({
+        ...validEnv(),
+        MERCHANT_RECIPIENT: "0x1234567890abcdef1234567890abcdef12345678",
+        MERCHANT_ASSET_OUT: "nep141:arb-0xaf88d065e77c8cC2239327C5EDb3A432268e5831.omft.near",
+      });
+      expect(logged).toBe("");
+    });
   });
 });

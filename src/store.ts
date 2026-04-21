@@ -192,15 +192,28 @@ export class SqliteStateStore implements StateStore {
   /**
    * List deposit addresses whose `createdAt` is older than the given
    * threshold (unix epoch ms). Used for background cleanup of stale states.
+   *
+   * When `phases` is provided and non-empty, only states currently in one of
+   * those phases are returned. The quote garbage collector uses this to avoid
+   * deleting in-flight settlements.
    */
   // eslint-disable-next-line @typescript-eslint/require-await
-  async listExpired(olderThanMs: number): Promise<string[]> {
+  async listExpired(
+    olderThanMs: number,
+    phases?: ReadonlySet<SwapPhase>,
+  ): Promise<string[]> {
     const db = this.getDb();
 
-    const results = db.exec(
-      "SELECT deposit_address FROM swap_states WHERE created_at < ?",
-      [olderThanMs],
-    );
+    let query = "SELECT deposit_address FROM swap_states WHERE created_at < ?";
+    const params: (number | string)[] = [olderThanMs];
+
+    if (phases && phases.size > 0) {
+      const placeholders = Array.from(phases, () => "?").join(", ");
+      query += ` AND phase IN (${placeholders})`;
+      params.push(...phases);
+    }
+
+    const results = db.exec(query, params);
 
     const firstResult = results[0];
     if (!firstResult) {
@@ -406,11 +419,16 @@ export class InMemoryStateStore implements StateStore {
   }
 
   // eslint-disable-next-line @typescript-eslint/require-await
-  async listExpired(olderThanMs: number): Promise<string[]> {
+  async listExpired(
+    olderThanMs: number,
+    phases?: ReadonlySet<SwapPhase>,
+  ): Promise<string[]> {
     const expired: string[] = [];
     for (const [addr, state] of this.states) {
       if (state.createdAt < olderThanMs) {
-        expired.push(addr);
+        if (!phases || phases.size === 0 || phases.has(state.phase)) {
+          expired.push(addr);
+        }
       }
     }
     return expired;

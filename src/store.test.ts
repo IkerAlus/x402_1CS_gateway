@@ -16,7 +16,7 @@ import {
   InvalidPhaseTransitionError,
 } from "./store.js";
 import type { StateStore, SwapState, SwapPhase } from "./types.js";
-import { VALID_PHASE_TRANSITIONS } from "./types.js";
+import { VALID_PHASE_TRANSITIONS, GC_ELIGIBLE_PHASES } from "./types.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Test helpers
@@ -304,6 +304,68 @@ function describeStore(
 
       const expired = await store.listExpired(1000);
       expect(expired).toEqual([]);
+    });
+
+    it("filters listExpired by phase when a phases set is provided", async () => {
+      // All three states are old enough to be "expired"
+      await store.create(
+        "0xQUOTE",
+        makeSwapState({ depositAddress: "0xQUOTE", createdAt: 1_000, phase: "QUOTED" }),
+      );
+
+      // Transition 0xPOLL to POLLING via valid path, preserving createdAt
+      await store.create(
+        "0xPOLL",
+        makeSwapState({ depositAddress: "0xPOLL", createdAt: 1_000, phase: "QUOTED" }),
+      );
+      await store.update("0xPOLL", { phase: "VERIFIED" });
+      await store.update("0xPOLL", { phase: "BROADCASTING" });
+      await store.update("0xPOLL", { phase: "BROADCAST", originTxHash: "0xTX" });
+      await store.update("0xPOLL", { phase: "POLLING" });
+
+      await store.create(
+        "0xDONE",
+        makeSwapState({ depositAddress: "0xDONE", createdAt: 1_000, phase: "QUOTED" }),
+      );
+      await store.update("0xDONE", { phase: "VERIFIED" });
+      await store.update("0xDONE", { phase: "BROADCASTING" });
+      await store.update("0xDONE", { phase: "BROADCAST", originTxHash: "0xTX2" });
+      await store.update("0xDONE", { phase: "POLLING" });
+      await store.update("0xDONE", { phase: "SETTLED" });
+
+      const expired = await store.listExpired(5_000, GC_ELIGIBLE_PHASES);
+      expect(expired).toContain("0xQUOTE");
+      expect(expired).toContain("0xDONE");
+      expect(expired).not.toContain("0xPOLL");
+    });
+
+    it("excludes in-flight states from listExpired even when old", async () => {
+      await store.create(
+        "0xPOLL",
+        makeSwapState({ depositAddress: "0xPOLL", createdAt: 1_000, phase: "QUOTED" }),
+      );
+      await store.update("0xPOLL", { phase: "VERIFIED" });
+      await store.update("0xPOLL", { phase: "BROADCASTING" });
+
+      const expired = await store.listExpired(5_000, GC_ELIGIBLE_PHASES);
+      expect(expired).toEqual([]);
+    });
+
+    it("preserves legacy listExpired behavior when phases is omitted", async () => {
+      await store.create(
+        "0xQUOTE",
+        makeSwapState({ depositAddress: "0xQUOTE", createdAt: 1_000, phase: "QUOTED" }),
+      );
+      await store.create(
+        "0xPOLL",
+        makeSwapState({ depositAddress: "0xPOLL", createdAt: 1_000, phase: "QUOTED" }),
+      );
+      await store.update("0xPOLL", { phase: "VERIFIED" });
+      await store.update("0xPOLL", { phase: "BROADCASTING" });
+
+      const expired = await store.listExpired(5_000);
+      expect(expired).toContain("0xQUOTE");
+      expect(expired).toContain("0xPOLL");
     });
 
     // ── listByPhase ─────────────────────────────────────────────────

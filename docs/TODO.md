@@ -1,7 +1,7 @@
 # x402-1CS Gateway — Production Readiness TODO
 
-**Date:** 2026-04-17
-**Based on:** Full codebase audit + 318 passing tests (301 mocked + 17 live) + typecheck clean
+**Date:** 2026-04-21
+**Based on:** Full codebase audit + 354 passing tests (337 mocked + 17 live) + typecheck clean
 **Target:** Prototype deployment for a small number of users
 
 ---
@@ -20,8 +20,10 @@
 | Manual receipt polling (resilient to ethers `tx.wait()` stalls) | Working |
 | TypeScript compilation | Clean |
 | In-flight settlement recovery on restart | Working |
-| Test suite (318 tests) | 100% pass |
-| ESLint | 0 errors, 46 pre-existing warnings (intentional `no-console` + unused imports in tests) |
+| Test suite (354 tests) | 100% pass |
+| Error response sanitization (no raw internals leaked to clients) | Working |
+| Address-mistake diagnosis (startup warnings + runtime error context) | Working |
+| ESLint | 0 errors, 59 pre-existing warnings (intentional `no-console` + unused imports in tests) |
 
 ---
 
@@ -41,6 +43,9 @@
 - **`.env.stellar` preset** — New pre-filled env file for Base USDC → Stellar USDC merchant destinations.
 - **CORS + helmet** — Gateway now installs `helmet()` for baseline HTTP hardening and `cors()` with `exposedHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE"]` and `allowedHeaders: ["Content-Type", "PAYMENT-SIGNATURE"]` so browser-based x402 clients can read / send the custom headers. Origin allowlist is configurable via `ALLOWED_ORIGINS` env var; undefined means "reflect any origin". Startup log prints the active policy.
 - **In-flight settlement recovery** — On startup, `recoverInFlightSettlements()` scans the store for swaps stuck in `BROADCASTING`, `BROADCAST`, or `POLLING` phases and resumes them in the background. BROADCASTING swaps without an `originTxHash` are marked FAILED (safe default — no re-broadcast). BROADCAST swaps are re-notified to 1CS then polled. POLLING swaps resume polling directly. Recovery tasks hold `SettlementLimiter` slots; swaps that can't acquire a slot are left in place for the next restart. `listByPhase()` promoted to the `StateStore` interface. 18 new tests (12 recovery + 6 store).
+- **GC no longer deletes in-flight settlements** — `QuoteGarbageCollector.sweep()` previously called `store.listExpired(cutoffMs)` with no phase filter (`src/rate-limiter.ts:285`), so any swap older than `quoteGcGracePeriodMs` (default 5 min) was deleted — including swaps still in `BROADCASTING`/`BROADCAST`/`POLLING`. Since `maxPollTimeMs` is also 5 min by default, a slow 1CS route would collide exactly with the GC window, breaking the buyer's HTTP response mid-settlement (1CS still processed the swap independently — not fund loss, but silently broken UX). Fix: introduced `GC_ELIGIBLE_PHASES` (`QUOTED`, `EXPIRED`, `SETTLED`, `FAILED`) in `types.ts` and extended `StateStore.listExpired(olderThanMs, phases?)` with an optional phase filter. The GC passes `GC_ELIGIBLE_PHASES`, so in-flight states are never touched. 8 new tests (6 store × both implementations + 2 rate-limiter integration).
+- **Error response sanitization + correlation IDs** — The middleware previously forwarded raw `err.message` (for both `GatewayError` and unknown errors) straight into HTTP 500/503/502/504 responses, leaking internals (upstream 1CS error bodies, facilitator wallet balances, RPC URLs with keys, file paths). Fix: `handleError()` in `src/middleware.ts` now maps each `GatewayError.code` to a curated client-safe message via `CLIENT_SAFE_MESSAGES`, returns a fixed generic message for any non-`GatewayError`, and attaches an 8-char hex `correlationId` to every error response body (and to the sanitized `PAYMENT-RESPONSE` `errorMessage` for 502/504). The full error detail — name, code, HTTP status, message, stack, method, path, IP — is written server-side via `logServerError()` under the same correlation ID so operators can grep for one specific request. 5 new tests in `src/middleware.test.ts` cover: 1CS trace leak stripped, facilitator wei balance stripped, non-`GatewayError` returns generic 500, sanitized `PAYMENT-RESPONSE` header, per-response unique correlation IDs.
+- **Server-side diagnosis of recipient / asset mistakes** — A live payment failure with `MERCHANT_RECIPIENT=merchantx402.nea` (typo: `.nea` instead of `.near`) landed with a generic `1CS quote rejected (400): Internal server error` in the server log, giving the operator no indication that it was an address typo. Fix: `GatewayError` now carries an optional `context: ErrorContext` bag used for server-log enrichment (never client-facing). A new `diagnoseQuoteRequest()` helper in `src/quote-engine.ts` inspects outgoing quote fields for known-bad patterns — invalid NEAR account (missing `.near`/`.tg` TLA), EVM-vs-NEAR/Stellar/Solana recipient mismatch, whitespace or `#` characters (from `.env` leading-space or inline-comment bugs), and unknown chain prefixes. `requestQuote()` attaches `{ originAsset, destinationAsset, recipient, amount, refundTo, upstreamStatus, hints[] }` as `context` on every error it throws (400 / 401 / 5xx / network). The middleware's `logServerError()` emits this context as a pretty-printed JSON second stderr line under the same correlation ID so operators see the likely cause immediately. The same diagnoser runs at startup (`config.validateRecipientFormat()`) and warns when any hint fires against the configured merchant values — catching typos before the first buyer arrives. Chain-prefix constants + helpers (`EVM_CHAIN_PREFIXES`, `NON_EVM_CHAIN_PREFIXES`, `extractChainPrefix`, `isValidNearAccount`, `isNearNativeAsset`) are extracted into a shared `src/chain-prefixes.ts` leaf module. Bonus fix: `requestQuote` now passes through `GatewayError` instances from injected `quoteFn`s rather than re-wrapping as `ServiceUnavailableError`. 23 new tests (7 config, 14 quote-engine diagnose + context-threading, 2 middleware log-context).
 
 ---
 

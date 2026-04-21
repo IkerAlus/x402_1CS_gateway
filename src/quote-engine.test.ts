@@ -8,6 +8,7 @@ import {
   computeMaxTimeoutSeconds,
   validateDeadline,
   toQuoteResponseRecord,
+  diagnoseQuoteRequest,
 } from "./quote-engine.js";
 import type { QuoteFn } from "./quote-engine.js";
 import {
@@ -496,5 +497,195 @@ describe("toQuoteResponseRecord", () => {
     expect(record.quote.amountOut).toBe("1000000");
     expect(record.quote.timeEstimate).toBe(30);
     expect(record.quoteRequest).toBeDefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// diagnoseQuoteRequest — recipient / asset format hints
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("diagnoseQuoteRequest", () => {
+  it("returns empty for a clean NEAR→NEAR config", () => {
+    expect(
+      diagnoseQuoteRequest({
+        originAsset: "nep141:base-0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.omft.near",
+        destinationAsset: "nep141:usdt.tether-token.near",
+        recipient: "merchantx402.near",
+        amount: "10000",
+        refundTo: "0x1234567890abcdef1234567890abcdef12345678",
+      }),
+    ).toEqual([]);
+  });
+
+  it("returns empty for a clean EVM-bridge destination", () => {
+    expect(
+      diagnoseQuoteRequest({
+        originAsset: "nep141:base-0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.omft.near",
+        destinationAsset: "nep141:arb-0xaf88d065e77c8cC2239327C5EDb3A432268e5831.omft.near",
+        recipient: "0x1234567890abcdef1234567890abcdef12345678",
+        amount: "10000",
+        refundTo: "0x1234567890abcdef1234567890abcdef12345678",
+      }),
+    ).toEqual([]);
+  });
+
+  it("flags a .nea typo as invalid NEAR account", () => {
+    const hints = diagnoseQuoteRequest({
+      destinationAsset: "nep141:usdt.tether-token.near",
+      recipient: "merchantx402.nea",
+    });
+    expect(hints.length).toBeGreaterThanOrEqual(1);
+    expect(hints.join("\n").toLowerCase()).toContain("valid near account");
+    expect(hints.join("\n")).toContain("merchantx402.nea");
+  });
+
+  it("flags an EVM address as recipient for a NEAR-native destination", () => {
+    const hints = diagnoseQuoteRequest({
+      destinationAsset: "nep141:usdt.tether-token.near",
+      recipient: "0x1234567890abcdef1234567890abcdef12345678",
+    });
+    expect(hints.join("\n").toLowerCase()).toContain("evm address");
+    expect(hints.join("\n").toLowerCase()).toContain("near");
+  });
+
+  it("flags whitespace in any field (leading space, inline #)", () => {
+    const hints = diagnoseQuoteRequest({
+      recipient: " merchantx402.near",
+      destinationAsset: "nep141:usdt.tether-token.near #nep141:gnosis-0xabc.omft.near",
+    });
+    const joined = hints.join("\n");
+    expect(joined).toContain("whitespace");
+    // Both fields flagged
+    expect(joined).toContain("recipient");
+    expect(joined).toContain("destinationAsset");
+  });
+
+  it("flags a NEAR account for an EVM-bridged destination", () => {
+    const hints = diagnoseQuoteRequest({
+      destinationAsset: "nep141:arb-0xaf88d065e77c8cC2239327C5EDb3A432268e5831.omft.near",
+      recipient: "some.near",
+    });
+    expect(hints.join("\n").toLowerCase()).toContain("evm address");
+    expect(hints.join("\n")).toContain("arb");
+  });
+
+  it("flags an unknown chain prefix", () => {
+    const hints = diagnoseQuoteRequest({
+      destinationAsset: "nep141:foobar-0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.omft.near",
+      recipient: "whatever",
+    });
+    expect(hints.join("\n").toLowerCase()).toContain("not in the known chain list");
+    expect(hints.join("\n")).toContain("foobar");
+  });
+
+  it("flags EVM address for Stellar destination", () => {
+    const hints = diagnoseQuoteRequest({
+      destinationAsset: "nep141:stellar-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN.omft.near",
+      recipient: "0x1234567890abcdef1234567890abcdef12345678",
+    });
+    expect(hints.join("\n").toLowerCase()).toContain("evm address");
+    expect(hints.join("\n")).toContain("stellar");
+  });
+
+  it("accepts a 64-char hex NEAR implicit account", () => {
+    const hints = diagnoseQuoteRequest({
+      destinationAsset: "nep141:usdt.tether-token.near",
+      recipient: "a".repeat(64), // 64 hex chars
+    });
+    expect(hints).toEqual([]);
+  });
+
+  it("ignores fields left undefined", () => {
+    // All undefined except destinationAsset — no hints about missing recipient.
+    const hints = diagnoseQuoteRequest({
+      destinationAsset: "nep141:usdt.tether-token.near",
+    });
+    expect(hints).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Error context threading — 1CS rejection surfaces in err.context
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("requestQuote — error context threading", () => {
+  it("attaches request fields + hints to QuoteUnavailableError from 400", async () => {
+    const cfg = testConfig({
+      merchantRecipient: "merchantx402.nea", // typo
+      merchantAssetOut: "nep141:usdt.tether-token.near",
+    });
+    const store = createMockStore();
+
+    try {
+      await buildPaymentRequirements(
+        cfg, store, "/api/resource",
+        failingQuoteFn(400, { message: "Internal server error" }),
+      );
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(QuoteUnavailableError);
+      const ctx = (err as QuoteUnavailableError).context;
+      expect(ctx).toBeDefined();
+      expect(ctx?.recipient).toBe("merchantx402.nea");
+      expect(ctx?.destinationAsset).toBe("nep141:usdt.tether-token.near");
+      expect(ctx?.upstreamStatus).toBe(400);
+      expect(Array.isArray(ctx?.hints)).toBe(true);
+      const hints = ctx?.hints as string[];
+      expect(hints.some((h) => h.toLowerCase().includes("valid near account"))).toBe(true);
+    }
+  });
+
+  it("attaches context to AuthenticationError from 401", async () => {
+    const cfg = testConfig();
+    const store = createMockStore();
+
+    try {
+      await buildPaymentRequirements(
+        cfg, store, "/api/resource",
+        failingQuoteFn(401, { message: "bad jwt" }),
+      );
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AuthenticationError);
+      const ctx = (err as AuthenticationError).context;
+      expect(ctx?.upstreamStatus).toBe(401);
+      expect(ctx?.recipient).toBe(cfg.merchantRecipient);
+    }
+  });
+
+  it("attaches context to ServiceUnavailableError from 5xx", async () => {
+    const cfg = testConfig();
+    const store = createMockStore();
+
+    try {
+      await buildPaymentRequirements(
+        cfg, store, "/api/resource",
+        failingQuoteFn(503, { message: "upstream down" }),
+      );
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ServiceUnavailableError);
+      const ctx = (err as ServiceUnavailableError).context;
+      expect(ctx?.upstreamStatus).toBe(503);
+      expect(ctx?.originAsset).toBe(cfg.originAssetIn);
+    }
+  });
+
+  it("attaches context to ServiceUnavailableError from a network error", async () => {
+    const cfg = testConfig();
+    const store = createMockStore();
+
+    try {
+      await buildPaymentRequirements(
+        cfg, store, "/api/resource",
+        networkErrorQuoteFn("ECONNREFUSED"),
+      );
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ServiceUnavailableError);
+      const ctx = (err as ServiceUnavailableError).context;
+      expect(ctx?.upstreamStatus).toBe("network");
+      expect(ctx?.recipient).toBe(cfg.merchantRecipient);
+    }
   });
 });

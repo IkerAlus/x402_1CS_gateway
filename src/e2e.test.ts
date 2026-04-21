@@ -455,7 +455,13 @@ describe("E2E: Full x402 protocol compliance", () => {
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(paymentRes.status).toBe(409);
-      expect(paymentRes.body.message).toContain("nonce already used");
+      expect(paymentRes.body.error).toBe("NONCE_ALREADY_USED");
+      // Client-facing message is sanitized — check that it mentions nonce
+      // reuse generically without leaking the specific nonce bytes.
+      expect(paymentRes.body.message.toLowerCase()).toContain("nonce");
+      expect(paymentRes.body.message.toLowerCase()).toContain("already");
+      expect(paymentRes.body.message).not.toMatch(/0x[0-9a-f]{64}/);
+      expect(paymentRes.body.correlationId).toMatch(/^[0-9a-f]{8}$/);
     });
   });
 

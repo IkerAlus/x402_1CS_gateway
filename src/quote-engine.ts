@@ -31,7 +31,16 @@ import {
   AuthenticationError,
   ServiceUnavailableError,
   DeadlineTooShortError,
+  GatewayError,
 } from "./types.js";
+import type { ErrorContext } from "./types.js";
+import {
+  EVM_CHAIN_PREFIXES,
+  NON_EVM_CHAIN_PREFIXES,
+  extractChainPrefix,
+  isValidNearAccount,
+  isNearNativeAsset,
+} from "./chain-prefixes.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Public API
@@ -196,6 +205,11 @@ export function buildQuoteRequest(
 
 /**
  * Call the 1CS `/v0/quote` endpoint, mapping SDK errors to gateway errors.
+ *
+ * Every thrown error carries a server-side `context` bag (quote fields +
+ * diagnosis hints) so operators can tell a recipient typo from a transient
+ * upstream outage without grepping multiple logs. The client-facing path
+ * never sees this context — it's consumed only by `logServerError`.
  */
 async function requestQuote(
   quoteRequest: Parameters<typeof OneClickService.getQuote>[0],
@@ -204,32 +218,71 @@ async function requestQuote(
   try {
     return await quoteFn(quoteRequest);
   } catch (err: unknown) {
+    // Pass through GatewayErrors untouched — an injected quoteFn (or a
+    // future wrapper) may have already produced a structured error we
+    // shouldn't obscure by re-wrapping as a network failure.
+    if (err instanceof GatewayError) {
+      throw err;
+    }
     if (err instanceof OneClickApiError) {
+      const ctx = buildQuoteDiagnosticContext(quoteRequest, err.status);
       switch (err.status) {
         case 400:
           throw new QuoteUnavailableError(
             `1CS quote rejected (400): ${extractErrorMessage(err)}`,
+            ctx,
           );
         case 401:
           throw new AuthenticationError(
             `1CS authentication failed (401): ${extractErrorMessage(err)}`,
+            ctx,
           );
         default:
           if (err.status >= 500) {
             throw new ServiceUnavailableError(
               `1CS service error (${err.status}): ${extractErrorMessage(err)}`,
+              ctx,
             );
           }
           throw new QuoteUnavailableError(
             `1CS unexpected error (${err.status}): ${extractErrorMessage(err)}`,
+            ctx,
           );
       }
     }
     // Network error or other non-HTTP failure
     throw new ServiceUnavailableError(
       `1CS unreachable: ${err instanceof Error ? err.message : String(err)}`,
+      buildQuoteDiagnosticContext(quoteRequest, "network"),
     );
   }
+}
+
+/**
+ * Build the `ErrorContext` attached to every quote-related gateway error.
+ * Contains the outgoing request fields plus the list of diagnostic hints
+ * from {@link diagnoseQuoteRequest} so operators see the likely cause in a
+ * single stderr line.
+ */
+function buildQuoteDiagnosticContext(
+  req: Parameters<typeof OneClickService.getQuote>[0],
+  upstreamStatus: number | string,
+): ErrorContext {
+  return {
+    originAsset: req.originAsset,
+    destinationAsset: req.destinationAsset,
+    recipient: req.recipient,
+    amount: req.amount,
+    refundTo: req.refundTo,
+    upstreamStatus,
+    hints: diagnoseQuoteRequest({
+      originAsset: req.originAsset,
+      destinationAsset: req.destinationAsset,
+      recipient: req.recipient,
+      amount: req.amount,
+      refundTo: req.refundTo,
+    }),
+  };
 }
 
 /**
@@ -371,4 +424,105 @@ function extractErrorMessage(err: InstanceType<typeof OneClickApiError>): string
     return String((err.body as { message: unknown }).message);
   }
   return err.statusText || err.message;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Quote-request diagnostics
+//
+// Shared helper used both at startup (config.validateRecipientFormat) and
+// at runtime (buildQuoteDiagnosticContext above) to produce human-readable
+// hints identifying the most common operator mistakes.
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Fields relevant to recipient/asset diagnosis. Kept narrow so both the
+ * config validator (which synthesizes one from env vars) and the runtime
+ * quote error wrapper (which passes the outgoing 1CS request) can call it.
+ */
+export interface QuoteRequestShape {
+  originAsset?: string;
+  destinationAsset?: string;
+  recipient?: string;
+  amount?: string;
+  refundTo?: string;
+}
+
+/**
+ * Inspect a 1CS quote request for patterns that usually indicate a
+ * configuration / address mistake. Returns a list of human-readable hints;
+ * empty when nothing suspicious is found.
+ *
+ * Detects:
+ *  - Whitespace or `#` in any string field (typical `.env` copy-paste bug:
+ *    leading space after `=` or inline comments).
+ *  - Recipient format that does not match the destination chain:
+ *      - EVM destination but recipient is not `0x`+40 hex chars
+ *      - NEAR-native destination but recipient is not a valid NEAR account
+ *        (missing `.near`/`.tg` TLA, uppercase, length out of bounds, etc.)
+ *      - Non-EVM destination (Stellar, Solana, Bitcoin, ...) but recipient
+ *        looks like an EVM address
+ *  - Unknown chain prefix in `destinationAsset` — we can't validate the
+ *    recipient format, so we surface this as a hint.
+ *
+ * Used by both the startup validator (`config.validateRecipientFormat`)
+ * and the runtime error wrapper (`buildQuoteDiagnosticContext`) so the
+ * operator sees the same diagnosis regardless of when it fires.
+ */
+export function diagnoseQuoteRequest(req: QuoteRequestShape): string[] {
+  const hints: string[] = [];
+
+  // 1. Whitespace / inline-comment artefacts.
+  //    Typical .env bugs: `KEY= value` (leading space), `KEY=value #comment`.
+  for (const field of [
+    "originAsset",
+    "destinationAsset",
+    "recipient",
+    "amount",
+    "refundTo",
+  ] as const) {
+    const value = req[field];
+    if (typeof value === "string" && /\s|#/.test(value)) {
+      hints.push(
+        `${field} "${value}" contains whitespace or '#' — check your .env for leading spaces or inline comments`,
+      );
+    }
+  }
+
+  // 2. Recipient format vs destination chain.
+  const destinationAsset = req.destinationAsset ?? "";
+  const recipient = req.recipient ?? "";
+  const destPrefix = extractChainPrefix(destinationAsset);
+  const isEvmRecipient = /^0x[a-fA-F0-9]{40}$/.test(recipient);
+
+  if (destPrefix !== null && EVM_CHAIN_PREFIXES.includes(destPrefix)) {
+    if (!isEvmRecipient) {
+      hints.push(
+        `recipient "${recipient}" does not look like an EVM address (expected 0x + 40 hex chars) but destinationAsset targets ${destPrefix}`,
+      );
+    }
+  } else if (destPrefix !== null && NON_EVM_CHAIN_PREFIXES.includes(destPrefix)) {
+    if (isEvmRecipient) {
+      hints.push(
+        `recipient "${recipient}" looks like an EVM address but destinationAsset targets ${destPrefix}`,
+      );
+    }
+  } else if (isNearNativeAsset(destinationAsset)) {
+    // NEAR-native: recipient should be a valid NEAR account.
+    if (isEvmRecipient) {
+      hints.push(
+        `recipient "${recipient}" looks like an EVM address but destinationAsset resolves to a NEAR-native token; recipient should be a NEAR account`,
+      );
+    } else if (recipient && !isValidNearAccount(recipient)) {
+      hints.push(
+        `recipient "${recipient}" does not appear to be a valid NEAR account (expected a '.near' or '.tg' suffix, or a 64-char implicit account ID)`,
+      );
+    }
+  } else if (destPrefix !== null) {
+    // Has a prefix but it's not in either known list.
+    hints.push(
+      `destinationAsset has chain prefix "${destPrefix}" which is not in the known chain list — recipient format cannot be validated automatically`,
+    );
+  }
+
+  return hints;
 }

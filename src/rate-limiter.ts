@@ -11,8 +11,10 @@
  *    in-flight simultaneously (phases BROADCASTING through POLLING). Prevents
  *    the facilitator wallet from being drained by parallel gas expenditures.
  *
- * 3. **Quote garbage collector** — periodically prunes QUOTED swap states
- *    whose deadlines have passed, freeing memory in the state store.
+ * 3. **Quote garbage collector** — periodically prunes stale swap states
+ *    (QUOTED whose deadlines have passed, plus terminal SETTLED/FAILED/EXPIRED)
+ *    freeing memory in the state store. In-flight settlements are never
+ *    deleted — see `GC_ELIGIBLE_PHASES` in `types.ts`.
  *
  * All three components are designed for dependency injection and testability:
  * the rate limiter accepts a `now()` function, and the GC accepts a store
@@ -22,6 +24,7 @@
  */
 
 import type { StateStore } from "./types.js";
+import { GC_ELIGIBLE_PHASES } from "./types.js";
 import type { GatewayConfig } from "./config.js";
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -230,13 +233,17 @@ export class SettlementLimiter {
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
- * Periodically prunes expired QUOTED swap states from the store.
+ * Periodically prunes stale swap states from the store.
  *
- * A quote is eligible for GC when:
- *   `now > quoteDeadline + gracePeriodMs`
+ * A state is eligible for GC when BOTH:
+ *   - `now > createdAt + gracePeriodMs`
+ *   - `phase ∈ GC_ELIGIBLE_PHASES` (QUOTED, EXPIRED, SETTLED, FAILED)
+ *
+ * In-flight phases (VERIFIED, BROADCASTING, BROADCAST, POLLING) are never
+ * deleted — doing so would orphan the buyer's HTTP request mid-settlement.
  *
  * This prevents the state store from accumulating unbounded entries from
- * quotes that were never paid.
+ * quotes that were never paid, and reclaims space from completed settlements.
  */
 export class QuoteGarbageCollector {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -282,7 +289,7 @@ export class QuoteGarbageCollector {
     this.running = true;
     try {
       const cutoffMs = this.now() - this.gracePeriodMs;
-      const expired = await this.store.listExpired(cutoffMs);
+      const expired = await this.store.listExpired(cutoffMs, GC_ELIGIBLE_PHASES);
       let deleted = 0;
       for (const depositAddress of expired) {
         await this.store.delete(depositAddress);

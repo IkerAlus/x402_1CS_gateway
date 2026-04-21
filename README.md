@@ -482,7 +482,7 @@ const client = new X402Client({
 
 ## 8. Running the test suite
 
-The project has 301 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
+The project has 337 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
 
 ### npm scripts
 
@@ -502,20 +502,20 @@ npm run format:check  # Prettier check
 npm test
 ```
 
-Runs 301 tests across 14 test files with fully mocked external dependencies (a 15th file, `live-1cs.test.ts`, runs only when `ONE_CLICK_JWT` is set). No API key, funds, or network access required. Covers:
+Runs 337 tests across 14 test files with fully mocked external dependencies (a 15th file, `live-1cs.test.ts`, runs only when `ONE_CLICK_JWT` is set). No API key, funds, or network access required. Covers:
 
-- **State store** (55 tests) — CRUD, TTL, concurrency, phase transitions, listByPhase
+- **State store** (61 tests) — CRUD, TTL, concurrency, phase transitions, listByPhase, `listExpired` phase-filter
 - **Settler** (45 tests) — broadcast, deposit notification, status polling, timeout, **in-flight recovery**
+- **Quote engine** (40 tests) — quote building, deadline validation, fee calculation, recipient/asset diagnosis, error-context threading
 - **Verifier** (34 tests) — EIP-3009 and Permit2 signature recovery, balance checks, nonce replay, timing
-- **Quote engine** (26 tests) — quote building, deadline validation, fee calculation
-- **Rate limiter** (23 tests) — per-IP quote limiting, settlement concurrency cap, quote garbage collection
+- **Rate limiter** (25 tests) — per-IP quote limiting, settlement concurrency cap, quote GC (never deletes in-flight)
 - **Types** (22 tests) — type guards, CAIP-2 parsing, error classes
 - **Client X402Client** (18 tests) — full protocol flow against real Express gateway with mocked chain deps
 - **E2E** (14 tests) — full gateway HTTP protocol compliance (402 -> sign -> 200)
 - **Mock integration** (14 tests) — multi-chain parametrized flow (NEAR, Arbitrum, Ethereum, Polygon, Stellar, Solana)
-- **Middleware** (12 tests) — Express middleware request/response handling, error mapping
+- **Middleware** (19 tests) — Express middleware request/response handling, error mapping, error sanitization + correlation IDs, server-side context logging
 - **Client signer** (12 tests) — EIP-3009/Permit2 signature round-trips, nonce uniqueness, chain ID parsing
-- **Config** (12 tests) — Zod validation, defaults, environment loading, CORS allowlist parsing
+- **Config** (19 tests) — Zod validation, defaults, environment loading, CORS allowlist parsing, recipient-format warnings
 - **Provider pool** (11 tests) — RPC rotation, failover, health checks
 - **Server** (3 tests) — CORS preflight, header exposure, origin allowlist enforcement
 

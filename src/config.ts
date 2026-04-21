@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { diagnoseQuoteRequest } from "./quote-engine.js";
 
 /**
  * Gateway configuration schema.
@@ -153,93 +154,29 @@ function parseAllowedOrigins(raw: string | undefined): string[] | undefined {
 }
 
 /**
- * Known NEP-141 chain prefixes that map to EVM chains.
- * When merchantAssetOut uses one of these, merchantRecipient should be an EVM address.
+ * Warn at startup if the merchant config contains any of the common
+ * operator mistakes detected by {@link diagnoseQuoteRequest}:
+ *   - whitespace or `#` in any string field (leading-space / inline-comment
+ *     bugs in `.env`)
+ *   - recipient format that doesn't match the destination chain (EVM, NEAR,
+ *     or other non-EVM like Stellar / Solana / Bitcoin)
+ *   - unknown chain prefix in `MERCHANT_ASSET_OUT`
  *
- * @see https://docs.near-intents.org/resources/asset-support
- */
-const EVM_CHAIN_PREFIXES = [
-  "eth", "base", "arb", "op", "polygon", "avax", "bsc", "turbochain",
-  "gnosis", "scroll", "xlayer", "berachain", "monad", "plasma",
-];
-
-/**
- * Known NEP-141 chain prefixes for non-EVM chains.
- * Recipient format varies by chain (Stellar addresses, Solana pubkeys, etc.).
- */
-const NON_EVM_CHAIN_PREFIXES = [
-  "solana", "bitcoin", "litecoin", "dogecoin", "stellar", "xrp",
-  "ton", "tron", "aptos", "sui", "starknet", "aleo", "cardano",
-  "dash", "zcash", "bch",
-];
-
-/**
- * Warn at startup if the merchantRecipient format doesn't match the destination chain.
- *
- * - EVM destination (e.g. nep141:eth-0x...omft.near) → recipient should be a 0x address
- * - NEAR destination (e.g. nep141:...usdc.near) → recipient should be a NEAR account
- * - Non-EVM destination (e.g. nep141:stellar-...) → recipient should NOT be a 0x address
- *
- * This is a warning, not an error, because 1CS may support mixed formats in the future.
+ * These are warnings, not errors, because 1CS may support shapes we don't
+ * recognize yet. The same diagnoser runs again at runtime (in
+ * `requestQuote`'s catch block) and surfaces as `err.context.hints` in
+ * server logs, so operators see the same diagnosis whenever it fires.
  */
 function validateRecipientFormat(cfg: GatewayConfig): void {
-  const asset = cfg.merchantAssetOut;
-  const recipient = cfg.merchantRecipient;
+  const hints = diagnoseQuoteRequest({
+    originAsset: cfg.originAssetIn,
+    destinationAsset: cfg.merchantAssetOut,
+    recipient: cfg.merchantRecipient,
+    amount: cfg.merchantAmountOut,
+    refundTo: cfg.gatewayRefundAddress,
+  });
 
-  // Extract chain prefix from OMFT-bridged assets (nep141:<chain>-<address>.omft.near)
-  const chainPrefix = extractChainPrefix(asset);
-  const isEvmDestination = chainPrefix !== null && EVM_CHAIN_PREFIXES.includes(chainPrefix);
-  const isNonEvmDestination = chainPrefix !== null && NON_EVM_CHAIN_PREFIXES.includes(chainPrefix);
-  const isEvmRecipient = /^0x[a-fA-F0-9]{40}$/i.test(recipient);
-
-  if (isEvmDestination && !isEvmRecipient) {
-    console.warn(
-      `[x402] ⚠️  MERCHANT_RECIPIENT "${recipient}" does not look like an EVM address, ` +
-      `but MERCHANT_ASSET_OUT "${asset}" targets an EVM chain. ` +
-      `The 1CS API may reject this or produce unexpected results. ` +
-      `Expected a 0x-prefixed address (e.g. 0x1234...abcd).`,
-    );
+  for (const hint of hints) {
+    console.warn(`[x402] ⚠️  Config check: ${hint}`);
   }
-
-  if (isNonEvmDestination && isEvmRecipient) {
-    console.warn(
-      `[x402] ⚠️  MERCHANT_RECIPIENT "${recipient}" looks like an EVM address, ` +
-      `but MERCHANT_ASSET_OUT "${asset}" targets ${chainPrefix}. ` +
-      `Expected a ${chainPrefix}-native address format.`,
-    );
-  }
-
-  // Check for NEAR native destination with EVM recipient
-  const isNearNative = !isEvmDestination && !isNonEvmDestination &&
-    chainPrefix === null && asset.includes(".near");
-  if (isNearNative && isEvmRecipient) {
-    console.warn(
-      `[x402] ⚠️  MERCHANT_RECIPIENT "${recipient}" looks like an EVM address, ` +
-      `but MERCHANT_ASSET_OUT "${asset}" targets NEAR. ` +
-      `Expected a NEAR account name (e.g. merchant.near).`,
-    );
-  }
-
-  // Unknown chain prefix — we can't validate, just log info
-  if (chainPrefix !== null && !isEvmDestination && !isNonEvmDestination) {
-    console.info(
-      `[x402] ℹ️  MERCHANT_ASSET_OUT "${asset}" has chain prefix "${chainPrefix}" ` +
-      `which is not in the known chain list. The gateway will still process swaps ` +
-      `via the 1CS API, but cannot validate recipient format.`,
-    );
-  }
-}
-
-/**
- * Extract the chain prefix from an OMFT-bridged NEP-141 asset ID.
- * Returns null if the asset is not in OMFT format.
- *
- * Example: `"nep141:arb-0xaf88...omft.near"` → `"arb"`
- */
-function extractChainPrefix(asset: string): string | null {
-  // Strip "nep141:" prefix if present
-  const body = asset.startsWith("nep141:") ? asset.substring(7) : asset;
-  const hyphenIndex = body.indexOf("-");
-  if (hyphenIndex <= 0) return null;
-  return body.substring(0, hyphenIndex);
 }

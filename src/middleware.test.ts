@@ -5,7 +5,7 @@
  * and injectable dependency stubs to avoid real RPC/1CS calls.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import express from "express";
 import request from "supertest";
 import {
@@ -406,6 +406,244 @@ describe("x402 Middleware", () => {
 
       const res = await request(failApp).get("/api/premium");
       expect(res.status).toBe(503);
+    });
+  });
+
+  // ── Error sanitization (H2) ────────────────────────────────────────
+
+  describe("Error response sanitization", () => {
+    let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      // Silence + capture server-side error logs so they don't pollute
+      // test output and so we can assert on what's logged.
+      consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      consoleErrorSpy.mockRestore();
+    });
+
+    it("replaces raw 1CS error bodies with a generic client message (503)", async () => {
+      // quoteFn throws a plain Error — this gets wrapped by the quote engine
+      // into a ServiceUnavailableError whose .message includes the raw text.
+      const failQuoteFn: QuoteFn = async () => {
+        throw new Error("Internal 1CS trace: /srv/oneclick/route/v0/quote.ts:172 — RPC https://secret-internal.1cs:8080 returned 'JWT xyz expired'");
+      };
+      const failApp = createTestApp(buildDeps({ quoteFn: failQuoteFn }));
+
+      const res = await request(failApp).get("/api/premium");
+
+      expect(res.status).toBe(503);
+      expect(res.body.error).toBe("SERVICE_UNAVAILABLE");
+      // Client message must not leak any internals
+      expect(res.body.message).not.toContain("1CS");
+      expect(res.body.message).not.toContain("secret-internal");
+      expect(res.body.message).not.toContain("/srv/");
+      expect(res.body.message).not.toContain("JWT");
+      expect(res.body.message).toMatch(/try again|unavailable/i);
+      // Correlation ID present and well-formed
+      expect(res.body.correlationId).toMatch(/^[0-9a-f]{8}$/);
+      // Server-side log carries the full detail
+      const logged = consoleErrorSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain("secret-internal");
+      expect(logged).toContain("JWT xyz expired");
+      expect(logged).toContain(res.body.correlationId);
+    });
+
+    it("does not leak facilitator wallet balance in InsufficientGasError (503)", async () => {
+      // broadcastFn throws InsufficientGasError directly; message leaks wei amounts.
+      const { InsufficientGasError } = await import("./types.js");
+      const leakyBroadcast = mockBroadcastFn({
+        eip3009Error: new InsufficientGasError(
+          "Facilitator gas balance too low: 123456789012345 wei, need at least 900000000000000 wei",
+        ),
+      });
+      const failApp = createTestApp(buildDeps({ broadcastFn: leakyBroadcast }));
+
+      // Get 402, sign, send
+      const initial = await request(failApp).get("/api/premium");
+      const requirements = decodePaymentRequiredHeader(
+        initial.headers["payment-required"],
+      ).accepts[0];
+      const { payload } = await signEIP3009Payload(buyerWallet, {
+        to: requirements.payTo,
+        value: requirements.amount,
+      });
+      const encoded = encodePaymentSignatureHeader(payload as any);
+
+      const res = await request(failApp)
+        .get("/api/premium")
+        .set("PAYMENT-SIGNATURE", encoded);
+
+      expect(res.status).toBe(503);
+      expect(res.body.error).toBe("INSUFFICIENT_GAS");
+      // Client must not see wei balances
+      expect(res.body.message).not.toMatch(/\d{10,}/);
+      expect(res.body.message).not.toContain("wei");
+      expect(res.body.message).not.toContain("Facilitator");
+      expect(res.body.correlationId).toMatch(/^[0-9a-f]{8}$/);
+      // Server log still has the full numbers
+      const logged = consoleErrorSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain("123456789012345");
+      expect(logged).toContain("Facilitator gas balance too low");
+    });
+
+    it("returns generic 500 for non-GatewayError with no raw message leak", async () => {
+      // Cause an unknown error by making the store.get throw a non-GatewayError.
+      // We piggyback on the store dep — wrap store.get with a thrower.
+      const leakyStore = {
+        ...deps.store,
+        async get(_addr: string) {
+          throw new Error(
+            "ENOENT: /etc/gateway/secrets/db.key — connection to postgres://admin:hunter2@10.0.0.5:5432/gateway refused",
+          );
+        },
+      };
+      const failApp = createTestApp(buildDeps({ store: leakyStore as any }));
+
+      // First get 402 via the real store, then swap in leakyStore for the signed request.
+      // Simpler: bypass the 402 by sending an arbitrary PAYMENT-SIGNATURE so store.get runs.
+      const payload: PaymentPayloadRecord = {
+        x402Version: 2,
+        accepted: { ...mockPaymentRequirements(), payTo: MOCK_DEPOSIT_ADDRESS },
+        payload: {},
+      };
+      const encoded = encodePaymentSignatureHeader(payload as any);
+
+      const res = await request(failApp)
+        .get("/api/premium")
+        .set("PAYMENT-SIGNATURE", encoded);
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toBe("INTERNAL_ERROR");
+      // Must not leak any secrets / internal paths / credentials
+      expect(res.body.message).not.toContain("ENOENT");
+      expect(res.body.message).not.toContain("/etc/");
+      expect(res.body.message).not.toContain("postgres://");
+      expect(res.body.message).not.toContain("hunter2");
+      expect(res.body.message).not.toContain("10.0.0.5");
+      expect(res.body.message).toMatch(/unexpected/i);
+      expect(res.body.correlationId).toMatch(/^[0-9a-f]{8}$/);
+      // But the server log captured everything
+      const logged = consoleErrorSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain("ENOENT");
+      expect(logged).toContain("postgres://admin:hunter2");
+    });
+
+    it("sanitizes 502 PAYMENT-RESPONSE header too (settlement failure)", async () => {
+      const leakyBroadcast = mockBroadcastFn({
+        eip3009Error: new Error(
+          "RPC https://mainnet.internal-rpc.example.com/key-abc123 timed out",
+        ),
+      });
+      const failApp = createTestApp(buildDeps({ broadcastFn: leakyBroadcast }));
+
+      const initial = await request(failApp).get("/api/premium");
+      const requirements = decodePaymentRequiredHeader(
+        initial.headers["payment-required"],
+      ).accepts[0];
+      const { payload } = await signEIP3009Payload(buyerWallet, {
+        to: requirements.payTo,
+        value: requirements.amount,
+      });
+      const encoded = encodePaymentSignatureHeader(payload as any);
+
+      const res = await request(failApp)
+        .get("/api/premium")
+        .set("PAYMENT-SIGNATURE", encoded);
+
+      expect(res.status).toBe(502);
+      expect(res.headers["payment-response"]).toBeDefined();
+      // JSON body sanitized
+      expect(res.body.message).not.toContain("mainnet.internal-rpc");
+      expect(res.body.message).not.toContain("key-abc123");
+      expect(res.body.correlationId).toMatch(/^[0-9a-f]{8}$/);
+
+      // PAYMENT-RESPONSE header's errorMessage is also sanitized
+      const paymentResponse = decodePaymentResponseHeader(
+        res.headers["payment-response"],
+      );
+      expect(paymentResponse.success).toBe(false);
+      expect(paymentResponse.errorReason).toBe("BROADCAST_FAILED");
+      expect(paymentResponse.errorMessage ?? "").not.toContain(
+        "internal-rpc",
+      );
+      expect(paymentResponse.errorMessage ?? "").not.toContain("key-abc123");
+
+      // Server log has the full RPC URL
+      const logged = consoleErrorSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain("mainnet.internal-rpc.example.com");
+      expect(logged).toContain("key-abc123");
+    });
+
+    it("each error response has a distinct correlation ID", async () => {
+      const failQuoteFn: QuoteFn = async () => {
+        throw new Error("boom");
+      };
+      const failApp = createTestApp(buildDeps({ quoteFn: failQuoteFn }));
+
+      const r1 = await request(failApp).get("/api/premium");
+      const r2 = await request(failApp).get("/api/premium");
+      expect(r1.body.correlationId).toMatch(/^[0-9a-f]{8}$/);
+      expect(r2.body.correlationId).toMatch(/^[0-9a-f]{8}$/);
+      expect(r1.body.correlationId).not.toBe(r2.body.correlationId);
+    });
+
+    it("logs err.context as a second stderr line when GatewayError carries context", async () => {
+      // Throw a QuoteUnavailableError with a context bag (the shape the quote
+      // engine produces on 1CS 400). The middleware must echo it into the log.
+      const { QuoteUnavailableError } = await import("./types.js");
+      const failQuoteFn: QuoteFn = async () => {
+        throw new QuoteUnavailableError(
+          "1CS quote rejected (400): Internal server error",
+          {
+            originAsset: "nep141:base-0x833589f...omft.near",
+            destinationAsset: "nep141:usdt.tether-token.near",
+            recipient: "merchantx402.nea",
+            amount: "10000",
+            refundTo: "0x1234567890abcdef1234567890abcdef12345678",
+            upstreamStatus: 400,
+            hints: [
+              "recipient \"merchantx402.nea\" does not appear to be a valid NEAR account",
+            ],
+          },
+        );
+      };
+      const failApp = createTestApp(buildDeps({ quoteFn: failQuoteFn }));
+
+      const res = await request(failApp).get("/api/premium");
+
+      // Client response still sanitized (H2 invariant).
+      expect(res.status).toBe(503);
+      expect(res.body.error).toBe("QUOTE_UNAVAILABLE");
+      expect(res.body.message).not.toContain("merchantx402.nea");
+      expect(res.body.message).not.toContain("Internal server error");
+      expect(res.body).not.toHaveProperty("context");
+      expect(res.body).not.toHaveProperty("hints");
+
+      // Server log contains the context block.
+      const logged = consoleErrorSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain("context:");
+      expect(logged).toContain("merchantx402.nea");
+      expect(logged).toContain("valid NEAR account");
+      expect(logged).toContain("\"upstreamStatus\": 400");
+      expect(logged).toContain(res.body.correlationId);
+    });
+
+    it("omits the context line when GatewayError has no context", async () => {
+      const { QuoteUnavailableError } = await import("./types.js");
+      const failQuoteFn: QuoteFn = async () => {
+        throw new QuoteUnavailableError("plain error, no context");
+      };
+      const failApp = createTestApp(buildDeps({ quoteFn: failQuoteFn }));
+
+      const res = await request(failApp).get("/api/premium");
+
+      expect(res.status).toBe(503);
+      const logged = consoleErrorSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain("plain error, no context");
+      expect(logged).not.toContain("context:"); // no context header emitted
     });
   });
 });

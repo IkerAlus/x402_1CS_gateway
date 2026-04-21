@@ -322,22 +322,154 @@ async function returnPaymentRequired(
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
+ * Client-safe messages keyed by `GatewayError.code`. Intentionally vague —
+ * full details (upstream error bodies, RPC endpoints, wallet balances,
+ * stack traces) are logged server-side and identified via the correlation
+ * ID included in every error response.
+ *
+ * **Do not include** internal state (balances, file paths, tx hashes that
+ * weren't already visible to the client, upstream error payloads) in any
+ * value here.
+ */
+const CLIENT_SAFE_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  // Quote / 1CS reachability (503)
+  QUOTE_UNAVAILABLE:
+    "Unable to obtain a swap quote at this time. Please try again shortly.",
+  AUTHENTICATION_ERROR:
+    "Gateway cannot authenticate with the swap provider.",
+  SERVICE_UNAVAILABLE:
+    "Upstream swap service is temporarily unavailable. Please try again shortly.",
+  DEADLINE_TOO_SHORT:
+    "Quote deadline is too short to complete the payment safely. Please retry.",
+  INSUFFICIENT_GAS:
+    "Gateway is temporarily unable to process settlements. Please try again shortly.",
+
+  // Settlement (502 / 504)
+  SWAP_FAILED:
+    "The cross-chain swap failed. If your payment was broadcast, contact the gateway operator with the correlation ID.",
+  SWAP_TIMEOUT:
+    "Settlement did not complete within the timeout. Contact the gateway operator with the correlation ID if you were charged.",
+  BROADCAST_FAILED:
+    "Failed to broadcast the payment transaction. Please retry.",
+  POLL_FAILED:
+    "Failed to observe the swap status after broadcast. Contact the gateway operator with the correlation ID if you were charged.",
+  TX_REVERTED:
+    "The payment transaction reverted on-chain. Please retry.",
+  TX_NOT_MINED:
+    "The payment transaction was not mined within the expected time. Contact the gateway operator with the correlation ID if you were charged.",
+
+  // Protocol / payload (4xx, 5xx)
+  NONCE_ALREADY_USED:
+    "Payment authorization nonce has already been used. Request a fresh quote and sign again.",
+  UNKNOWN_PAYLOAD:
+    "Payment payload format not recognized.",
+  MISSING_SIGNATURE:
+    "Payment payload is missing a required signature.",
+  STATE_NOT_FOUND:
+    "No swap state found for this deposit address.",
+  INVALID_PHASE:
+    "Swap is not in a state that can be settled.",
+  INCOMPLETE_STATE:
+    "Swap state is incomplete. Request a fresh quote and sign again.",
+});
+
+/** Fallback when a GatewayError carries an unmapped code. */
+const DEFAULT_GATEWAY_CLIENT_MESSAGE =
+  "Gateway request failed. Contact the gateway operator with the correlation ID.";
+
+/** Generic message returned for any non-GatewayError (500 INTERNAL_ERROR). */
+const DEFAULT_INTERNAL_CLIENT_MESSAGE =
+  "An unexpected error occurred. Contact the gateway operator with the correlation ID.";
+
+/**
+ * Generate a short correlation ID (8 hex chars) used to tie a client-facing
+ * error response to the detailed server-side log entry. Short enough to
+ * quote verbally, long enough to identify one request among thousands.
+ */
+function generateCorrelationId(): string {
+  return Math.floor(Math.random() * 0x1_0000_0000)
+    .toString(16)
+    .padStart(8, "0");
+}
+
+/** Map a GatewayError to its client-safe message. */
+function clientMessageFor(err: GatewayError): string {
+  return CLIENT_SAFE_MESSAGES[err.code] ?? DEFAULT_GATEWAY_CLIENT_MESSAGE;
+}
+
+/**
+ * Log the full error details server-side for operator debugging.
+ *
+ * Output goes to stderr via `console.error` and contains:
+ *  - ISO timestamp and correlation ID
+ *  - HTTP method, path, client IP (as available)
+ *  - For `GatewayError`: name, code, HTTP status, and full message
+ *  - For any `Error`: name and full message
+ *  - For non-Error throws: the stringified value
+ *  - The full stack trace (separate log line)
+ *
+ * This output **must never** reach the HTTP client. Only the correlation
+ * ID is echoed back so operators can grep logs on incident reports.
+ */
+function logServerError(
+  correlationId: string,
+  req: Request | undefined,
+  err: unknown,
+): void {
+  const timestamp = new Date().toISOString();
+  const method = req?.method ?? "-";
+  const path = req?.originalUrl ?? "-";
+  const ip = req?.ip ?? req?.socket?.remoteAddress ?? "-";
+  const prefix = `[x402][error][${timestamp}][cid=${correlationId}] ${method} ${path} from ${ip}`;
+
+  if (err instanceof GatewayError) {
+    console.error(
+      `${prefix} — ${err.name} (code=${err.code}, httpStatus=${err.httpStatus}): ${err.message}`,
+    );
+    // Dump structured diagnostic context (request fields + hints) when
+    // present. This is the operator's primary signal for "what actually
+    // went wrong" — e.g. a malformed NEAR recipient vs. a flaky upstream.
+    if (err.context && Object.keys(err.context).length > 0) {
+      console.error(
+        `[x402][error][cid=${correlationId}] context: ${JSON.stringify(err.context, null, 2)}`,
+      );
+    }
+    if (err.stack) console.error(err.stack);
+    return;
+  }
+  if (err instanceof Error) {
+    console.error(`${prefix} — ${err.name}: ${err.message}`);
+    if (err.stack) console.error(err.stack);
+    return;
+  }
+  console.error(`${prefix} — Non-Error thrown: ${String(err)}`);
+}
+
+/**
  * Map errors to appropriate HTTP responses.
  *
  * Gateway errors carry their own `httpStatus`; unknown errors become 500.
  * For settlement failures (502, 504), we include a PAYMENT-RESPONSE header
  * with `success: false` so the client can interpret the failure.
+ *
+ * All error responses carry a short `correlationId`; the full error (name,
+ * message, stack) is logged server-side under that ID so operators can
+ * investigate without the client ever seeing internal details.
  */
 function handleError(res: Response, err: unknown): void {
+  const correlationId = generateCorrelationId();
+  logServerError(correlationId, res.req, err);
+
   if (err instanceof GatewayError) {
     const status = err.httpStatus;
+    const clientMsg = clientMessageFor(err);
 
     // For settlement-related errors, include PAYMENT-RESPONSE header
     if (status === 502 || status === 504) {
       const failResponse: SettleResponse = {
         success: false,
         errorReason: err.code,
-        errorMessage: err.message,
+        errorMessage: clientMsg,
         transaction: "",
         network: "" as Network,
       };
@@ -351,16 +483,17 @@ function handleError(res: Response, err: unknown): void {
 
     res.status(status).json({
       error: err.code,
-      message: err.message,
+      message: clientMsg,
+      correlationId,
     });
     return;
   }
 
-  // Unknown error
-  const message = err instanceof Error ? err.message : String(err);
+  // Unknown error — never reveal raw message or stack to the client.
   res.status(500).json({
     error: "INTERNAL_ERROR",
-    message,
+    message: DEFAULT_INTERNAL_CLIENT_MESSAGE,
+    correlationId,
   });
 }
 

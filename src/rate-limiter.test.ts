@@ -285,11 +285,11 @@ describe("QuoteGarbageCollector", () => {
     let listExpiredCallCount = 0;
     const slowStore: typeof store = {
       ...store,
-      async listExpired(olderThanMs: number) {
+      async listExpired(olderThanMs: number, phases?: ReadonlySet<SwapState["phase"]>) {
         listExpiredCallCount++;
         // Simulate delay
         await new Promise((r) => setTimeout(r, 50));
-        return store.listExpired(olderThanMs);
+        return store.listExpired(olderThanMs, phases);
       },
       // delegate the rest
       create: store.create.bind(store),
@@ -307,6 +307,67 @@ describe("QuoteGarbageCollector", () => {
     // Only one should have actually run
     expect(listExpiredCallCount).toBe(1);
     expect(d1 + d2).toBe(1); // One deleted 1, the other returned 0
+  });
+
+  it("does not delete in-flight settlements", async () => {
+    const gc = new QuoteGarbageCollector(store, 5_000, () => 100_000);
+
+    // Old QUOTED state — eligible for GC
+    await store.create(
+      "0xQUOTE",
+      makeState({ depositAddress: "0xQUOTE", createdAt: 1_000, phase: "QUOTED" }),
+    );
+
+    // Old POLLING state — must NOT be deleted
+    await store.create(
+      "0xPOLL",
+      makeState({ depositAddress: "0xPOLL", createdAt: 1_000, phase: "QUOTED" }),
+    );
+    await store.update("0xPOLL", { phase: "VERIFIED" });
+    await store.update("0xPOLL", { phase: "BROADCASTING" });
+    await store.update("0xPOLL", { phase: "BROADCAST", originTxHash: "0xTX" });
+    await store.update("0xPOLL", { phase: "POLLING" });
+
+    // Old BROADCASTING state — must NOT be deleted either
+    await store.create(
+      "0xBROAD",
+      makeState({ depositAddress: "0xBROAD", createdAt: 1_000, phase: "QUOTED" }),
+    );
+    await store.update("0xBROAD", { phase: "VERIFIED" });
+    await store.update("0xBROAD", { phase: "BROADCASTING" });
+
+    const deleted = await gc.sweep();
+    expect(deleted).toBe(1);
+    expect(await store.get("0xQUOTE")).toBeNull();
+    expect(await store.get("0xPOLL")).not.toBeNull();
+    expect(await store.get("0xBROAD")).not.toBeNull();
+  });
+
+  it("deletes terminal states (SETTLED/FAILED/EXPIRED) older than grace period", async () => {
+    const gc = new QuoteGarbageCollector(store, 5_000, () => 100_000);
+
+    // Walk 0xDONE through to SETTLED
+    await store.create(
+      "0xDONE",
+      makeState({ depositAddress: "0xDONE", createdAt: 1_000, phase: "QUOTED" }),
+    );
+    await store.update("0xDONE", { phase: "VERIFIED" });
+    await store.update("0xDONE", { phase: "BROADCASTING" });
+    await store.update("0xDONE", { phase: "BROADCAST", originTxHash: "0xTX" });
+    await store.update("0xDONE", { phase: "POLLING" });
+    await store.update("0xDONE", { phase: "SETTLED" });
+
+    // Mark another as FAILED directly
+    await store.create(
+      "0xFAIL",
+      makeState({ depositAddress: "0xFAIL", createdAt: 1_000, phase: "QUOTED" }),
+    );
+    await store.update("0xFAIL", { phase: "FAILED", error: "test" });
+
+    const deleted = await gc.sweep();
+    expect(deleted).toBe(2);
+    expect(await store.get("0xDONE")).toBeNull();
+    expect(await store.get("0xFAIL")).toBeNull();
   });
 
   it("start and stop manage the timer", () => {

@@ -524,6 +524,20 @@ export async function recoverSettlement(
 }
 
 /**
+ * Result of a recovery sweep. `tasks` is the list of background promises —
+ * one per settlement that acquired a limiter slot. Production (server
+ * startup) ignores it so recovery runs truly fire-and-forget; tests
+ * `Promise.all(tasks)` to await deterministic completion instead of
+ * relying on real-timer sleeps.
+ */
+export interface RecoveryResult {
+  total: number;
+  started: number;
+  skipped: number;
+  tasks: Promise<void>[];
+}
+
+/**
  * Scan the store for in-flight settlements and resume them in the background.
  *
  * Called once during server startup, after dependencies are wired but before
@@ -534,7 +548,10 @@ export async function recoverSettlement(
  * Swaps that cannot acquire a limiter slot are left in place (not marked FAILED)
  * and will be recovered on the next restart.
  *
- * @returns Counts of total stuck swaps found, how many were started, and how many skipped.
+ * @returns {@link RecoveryResult} with counts and an array of background
+ *   task promises. Tests can `await Promise.all(result.tasks)` to wait for
+ *   recovery completion deterministically; production callers can ignore
+ *   `tasks` to preserve fire-and-forget semantics.
  */
 export async function recoverInFlightSettlements(
   store: StateStore,
@@ -542,7 +559,7 @@ export async function recoverInFlightSettlements(
   statusPollFn: StatusPollFn,
   settlementLimiter: SettlementLimiter | undefined,
   cfg: GatewayConfig,
-): Promise<{ total: number; started: number; skipped: number }> {
+): Promise<RecoveryResult> {
   const [broadcasting, broadcast, polling] = await Promise.all([
     store.listByPhase("BROADCASTING"),
     store.listByPhase("BROADCAST"),
@@ -553,7 +570,7 @@ export async function recoverInFlightSettlements(
   const total = stuckSwaps.length;
 
   if (total === 0) {
-    return { total: 0, started: 0, skipped: 0 };
+    return { total: 0, started: 0, skipped: 0, tasks: [] };
   }
 
   console.log(
@@ -563,6 +580,7 @@ export async function recoverInFlightSettlements(
 
   let started = 0;
   let skipped = 0;
+  const tasks: Promise<void>[] = [];
 
   for (const state of stuckSwaps) {
     // Respect the settlement limiter — don't starve new requests
@@ -576,14 +594,17 @@ export async function recoverInFlightSettlements(
 
     started++;
 
-    // Fire-and-forget: recovery runs in the background
-    void recoverSettlement(state, store, depositNotifyFn, statusPollFn, cfg)
+    // Keep the promise around so tests can await completion, but don't
+    // let a rejection bubble — `recoverSettlement` is documented to
+    // swallow all errors and mark the swap FAILED instead.
+    const task = recoverSettlement(state, store, depositNotifyFn, statusPollFn, cfg)
       .finally(() => {
         settlementLimiter?.release();
       });
+    tasks.push(task);
   }
 
-  return { total, started, skipped };
+  return { total, started, skipped, tasks };
 }
 
 // ═══════════════════════════════════════════════════════════════════════

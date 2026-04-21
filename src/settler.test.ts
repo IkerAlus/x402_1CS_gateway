@@ -1104,7 +1104,10 @@ describe("recoverInFlightSettlements", () => {
     const result = await recoverInFlightSettlements(
       store, mockDepositNotifyFn(), mockStatusPollFn(), undefined, cfg,
     );
-    expect(result).toEqual({ total: 0, started: 0, skipped: 0 });
+    expect(result.total).toBe(0);
+    expect(result.started).toBe(0);
+    expect(result.skipped).toBe(0);
+    expect(result.tasks).toEqual([]);
   });
 
   it("should find and start recovery across all phases", async () => {
@@ -1123,8 +1126,8 @@ describe("recoverInFlightSettlements", () => {
     expect(result.started).toBe(3);
     expect(result.skipped).toBe(0);
 
-    // Wait briefly for background recovery to finish
-    await new Promise((r) => setTimeout(r, 200));
+    // Await background recovery tasks deterministically.
+    await Promise.all(result.tasks);
 
     // 0xA: FAILED (no txHash)
     expect((await store.get("0xA"))!.phase).toBe("FAILED");
@@ -1162,15 +1165,15 @@ describe("recoverInFlightSettlements", () => {
 
     const limiter = new SettlementLimiter(5);
 
-    await recoverInFlightSettlements(
+    const result = await recoverInFlightSettlements(
       store, mockDepositNotifyFn(), mockStatusPollFn(), limiter, cfg,
     );
 
     // Initially 1 slot taken
     expect(limiter.current).toBe(1);
 
-    // Wait for recovery to finish
-    await new Promise((r) => setTimeout(r, 200));
+    // Await recovery tasks deterministically.
+    await Promise.all(result.tasks);
 
     // Slot released
     expect(limiter.current).toBe(0);

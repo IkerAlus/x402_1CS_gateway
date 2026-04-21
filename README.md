@@ -520,7 +520,7 @@ curl -s http://localhost:3402/openapi.json | jq '{openapi, info, paths: (.paths|
 
 ## 9. Running the test suite
 
-The project has 438 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
+The project has 467 unit/integration tests plus 11 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
 
 ### npm scripts
 
@@ -540,12 +540,13 @@ npm run format:check  # Prettier check
 npm test
 ```
 
-Runs 438 tests across 18 test files with fully mocked external dependencies (a 19th file, `live-1cs.test.ts`, runs only when `ONE_CLICK_JWT` is set). No API key, funds, or network access required. Covers:
+Runs 467 tests across 19 test files with fully mocked external dependencies (a 20th file, `live-1cs.test.ts`, runs only when `ONE_CLICK_JWT` is set). No API key, funds, or network access required. Covers:
 
 - **State store** (61 tests) — CRUD, TTL, concurrency, phase transitions, listByPhase, `listExpired` phase-filter
-- **Settler** (45 tests) — broadcast, deposit notification, status polling, timeout, **in-flight recovery**
+- **Settler** (45 tests) — broadcast, deposit notification, status polling, timeout, **in-flight recovery** (deterministic via `tasks[]`)
 - **Quote engine** (40 tests) — quote building, deadline validation, fee calculation, recipient/asset diagnosis, error-context threading
 - **Verifier** (34 tests) — EIP-3009 and Permit2 signature recovery, balance checks, nonce replay, timing
+- **Chain prefixes** (29 tests) — NEP-141 chain prefix extraction, NEAR account format (implicit + named), OMFT vs NEAR-native, list invariants
 - **Ownership proof** (28 tests) — canonical message, URL normalisation, EIP-191 sign/recover round-trip, startup validation
 - **Config** (27 tests) — Zod validation, defaults, environment loading, CORS allowlist parsing, recipient-format warnings, discovery env vars
 - **Rate limiter** (25 tests) — per-IP quote limiting, settlement concurrency cap, quote GC (never deletes in-flight)

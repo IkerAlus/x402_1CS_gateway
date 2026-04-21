@@ -22,6 +22,7 @@ import type {
   PaymentRequirementsRecord,
 } from "./types.js";
 import type { GatewayConfig } from "./config.js";
+import { mockGatewayConfig } from "./mocks/mock-config.js";
 import {
   authorizationTypes,
   permit2WitnessTypes,
@@ -43,29 +44,13 @@ function randomWallet(): ethers.Wallet {
   return ethers.Wallet.createRandom();
 }
 
-/** Minimal valid GatewayConfig for verifier tests. */
+/**
+ * Minimal valid `GatewayConfig` for verifier tests. Delegates to the
+ * shared `mockGatewayConfig` fixture (same defaults used by the rest of
+ * the suite) so verifier + integration tests stay in lockstep.
+ */
 function testConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
-  return {
-    oneClickJwt: "test-jwt",
-    oneClickBaseUrl: "https://1click.test",
-    merchantRecipient: "merchant.near",
-    merchantAssetOut: "near:nUSDC",
-    merchantAmountOut: "10000000",
-    originNetwork: TEST_NETWORK,
-    originAssetIn: "base:USDC",
-    originTokenAddress: TEST_TOKEN_ADDRESS,
-    originRpcUrls: ["https://rpc.test"],
-    facilitatorPrivateKey: "0x" + "ab".repeat(32),
-    gatewayRefundAddress: "0x" + "cd".repeat(20),
-    maxPollTimeMs: 300_000,
-    pollIntervalBaseMs: 2_000,
-    pollIntervalMaxMs: 30_000,
-    quoteExpiryBufferSec: 30,
-    tokenName: "USD Coin",
-    tokenVersion: "2",
-    tokenSupportsEip3009: true,
-    ...overrides,
-  };
+  return mockGatewayConfig(overrides);
 }
 
 /** Build a mock PaymentRequirementsRecord. */

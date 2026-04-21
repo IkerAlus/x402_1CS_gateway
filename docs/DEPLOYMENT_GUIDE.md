@@ -443,7 +443,7 @@ const client = new X402Client({
 
 ## 8. Running the test suite
 
-The project has 278 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
+The current numbers — total tests, per-file breakdown, live-suite runtime — live in **[docs/TEST_RESULTS.md](./TEST_RESULTS.md)**, which is refreshed whenever the suite changes. This section documents *how* to run tests; for *what* gets run, see that file.
 
 ### npm scripts
 
@@ -463,21 +463,7 @@ npm run format:check  # Prettier check
 npm test
 ```
 
-Runs 278 tests across 13 test files with fully mocked external dependencies. No API key, funds, or network access required. Covers:
-
-- **State store** (49 tests) — CRUD, TTL, concurrency, phase transitions
-- **Verifier** (34 tests) — EIP-3009 and Permit2 signature recovery, balance checks, nonce replay, timing
-- **Settler** (33 tests) — broadcast, deposit notification, status polling, timeout handling, deposit-notify logging
-- **Quote engine** (26 tests) — quote building, deadline validation, fee calculation
-- **Rate limiter** (23 tests) — per-IP quote limiting, settlement concurrency cap, quote garbage collection
-- **Types** (22 tests) — type guards, CAIP-2 parsing, error classes
-- **Client X402Client** (18 tests) — full protocol flow against real Express gateway with mocked chain deps
-- **E2E** (14 tests) — full gateway HTTP protocol compliance (402 -> sign -> 200)
-- **Middleware** (12 tests) — Express middleware request/response handling, error mapping
-- **Client signer** (12 tests) — EIP-3009/Permit2 signature round-trips, nonce uniqueness, chain ID parsing
-- **Provider pool** (11 tests) — RPC rotation, failover, health checks
-- **Config** (10 tests) — Zod validation, defaults, environment loading
-- **Mock integration** (14 tests) — multi-chain parametrized flow (NEAR, Arbitrum, Ethereum, Polygon, Stellar, Solana)
+Fully mocked — no API key, funds, or network access required. Per-file counts and module coverage are listed in `docs/TEST_RESULTS.md` § "Mocked Test Suite".
 
 ### Live 1CS API tests
 
@@ -489,7 +475,7 @@ ONE_CLICK_JWT="your-jwt" npm run test:live
 set -a && source .env.test && set +a && npm run test:live
 ```
 
-Runs 17 tests against the **real 1CS API** (skipped unless `ONE_CLICK_JWT` is set). These tests exercise authentication, dry quotes, real quotes with deposit addresses, pricing sanity checks, error handling, the full gateway 402->sign->settle flow (via supertest), and an end-to-end `X402Client.payAndFetch()` flow — both using real 1CS quotes but mocked on-chain broadcast. No funds are spent — deposit addresses are generated but never funded.
+Runs the live-only tests gated by `ONE_CLICK_JWT` against the real 1CS API. Authentication, quote pairs (dry + real), error mapping, the full gateway `402 → sign → settle` flow (via supertest), and `X402Client.payAndFetch` are all exercised with real quotes but mocked on-chain broadcast — no funds are spent. See `docs/TEST_RESULTS.md` § "Live 1CS API Test Suite" for the current list and per-test durations.
 
 The `.env.test` file (gitignored) stores the JWT so you don't have to paste it every time:
 

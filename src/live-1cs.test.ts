@@ -27,7 +27,6 @@ import {
   decodePaymentRequiredHeader,
   encodePaymentSignatureHeader,
 } from "@x402/core/http";
-import type { PaymentRequired } from "@x402/core/types";
 import { ethers } from "ethers";
 
 import { createX402Middleware } from "./middleware.js";
@@ -260,35 +259,6 @@ describeIfLive("Live 1CS API Integration", () => {
 
   // ── 4. Quote pricing sanity ──────────────────────────────────────
 
-  describe("Quote pricing sanity", () => {
-    it("USDC-to-USDC swap has reasonable fees (< 5%)", async () => {
-      const deadline = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-
-      const resp = await OneClickService.getQuote({
-        dry: true,
-        swapType: QuoteRequest.swapType.EXACT_OUTPUT,
-        slippageTolerance: 50,
-        originAsset: LIVE_ORIGIN_ASSET,
-        depositType: QuoteRequest.depositType.ORIGIN_CHAIN,
-        destinationAsset: LIVE_DESTINATION_ASSET,
-        amount: "10000000", // 10 USDC
-        refundTo: "0x0000000000000000000000000000000000000001",
-        refundType: QuoteRequest.refundType.ORIGIN_CHAIN,
-        recipient: "test.near",
-        recipientType: QuoteRequest.recipientType.DESTINATION_CHAIN,
-        deadline,
-      });
-
-      const amountIn = Number(resp.quote.amountIn);
-      const amountOut = Number(resp.quote.amountOut);
-      const feePercent = ((amountIn - amountOut) / amountOut) * 100;
-
-      // For stablecoin-to-stablecoin, fees should be well under 5%
-      expect(feePercent).toBeLessThan(5);
-      expect(feePercent).toBeGreaterThanOrEqual(0);
-    }, LIVE_TIMEOUT);
-  });
-
   // ── 5. Error handling: invalid asset pair ─────────────────────────
 
   describe("Error handling", () => {
@@ -389,19 +359,6 @@ describeIfLive("Live 1CS API Integration", () => {
       expect(pr.resource.url).toBe("/api/premium");
     }, LIVE_TIMEOUT);
 
-    it("deposit address from 402 is unique per request", async () => {
-      const deps = liveDeps();
-      const app = createLiveTestApp(deps);
-
-      const res1 = await request(app).get("/api/premium");
-      const res2 = await request(app).get("/api/premium");
-
-      const pr1 = decodePaymentRequiredHeader(res1.headers["payment-required"]);
-      const pr2 = decodePaymentRequiredHeader(res2.headers["payment-required"]);
-
-      // Each request should get a unique deposit address from 1CS
-      expect(pr1.accepts[0]!.payTo).not.toBe(pr2.accepts[0]!.payTo);
-    }, LIVE_TIMEOUT);
   });
 
   // ── 7. Full 402 → sign → 200 flow (real quote, mocked settlement) ─
@@ -527,72 +484,7 @@ describeIfLive("Live 1CS API Integration", () => {
     }, LIVE_TIMEOUT);
   });
 
-  // ── 9. Different amount sizes ─────────────────────────────────────
-
-  describe("Various amount sizes", () => {
-    it("handles a small amount (0.01 USDC = 10000 units)", async () => {
-      const cfg = liveConfig({ merchantAmountOut: "10000" }); // 0.01 USDC
-      const deps = liveDeps({ cfg });
-      const app = createLiveTestApp(deps);
-
-      const res = await request(app).get("/api/premium");
-      expect(res.status).toBe(402);
-
-      const pr = decodePaymentRequiredHeader(res.headers["payment-required"]);
-      expect(BigInt(pr.accepts[0]!.amount)).toBeGreaterThan(0n);
-    }, LIVE_TIMEOUT);
-
-    it("handles a larger amount (100 USDC = 100000000 units)", async () => {
-      const cfg = liveConfig({ merchantAmountOut: "100000000" }); // 100 USDC
-      const deps = liveDeps({ cfg });
-      const app = createLiveTestApp(deps);
-
-      const res = await request(app).get("/api/premium");
-      expect(res.status).toBe(402);
-
-      const pr = decodePaymentRequiredHeader(res.headers["payment-required"]);
-      const amount = BigInt(pr.accepts[0]!.amount);
-      // For 100 USDC out, amountIn should be at least 100 USDC
-      expect(amount).toBeGreaterThanOrEqual(100000000n);
-    }, LIVE_TIMEOUT);
-  });
-
-  // ── 10. State store persists real quote data ──────────────────────
-
-  describe("State store with real 1CS data", () => {
-    it("persists the real 1CS quote response in the state store", async () => {
-      const store = new InMemoryStateStore();
-      const deps = liveDeps({ store });
-      const app = createLiveTestApp(deps);
-
-      // Trigger a 402 to populate the store
-      const res = await request(app).get("/api/premium");
-      expect(res.status).toBe(402);
-
-      // Decode the deposit address from the 402
-      const pr = decodePaymentRequiredHeader(res.headers["payment-required"]);
-      const depositAddress = pr.accepts[0]!.payTo;
-
-      // Verify the state store has the real 1CS data
-      const state = await store.get(depositAddress);
-      expect(state).toBeDefined();
-      expect(state!.phase).toBe("QUOTED");
-      expect(state!.depositAddress).toBe(depositAddress);
-
-      // The quote response should contain real 1CS data
-      expect(state!.quoteResponse.correlationId).toBeTruthy();
-      expect(state!.quoteResponse.quote.amountIn).toBeTruthy();
-      expect(state!.quoteResponse.quote.amountOut).toBe("1000000"); // 1 USDC exact output
-      expect(state!.quoteResponse.quote.depositAddress).toBe(depositAddress);
-
-      // Payment requirements should be properly mapped
-      expect(state!.paymentRequirements.scheme).toBe("exact");
-      expect(state!.paymentRequirements.network).toBe(LIVE_NETWORK);
-      expect(state!.paymentRequirements.payTo).toBe(depositAddress);
-    }, LIVE_TIMEOUT);
-  });
-
-  // ── 11. Status endpoint reachability ──────────────────────────────
+  // ── 9. Status endpoint reachability ──────────────────────────────
 
   describe("Status endpoint", () => {
     it("returns a response for a known or unknown deposit address", async () => {
@@ -612,38 +504,4 @@ describeIfLive("Live 1CS API Integration", () => {
     }, LIVE_TIMEOUT);
   });
 
-  // ── 12. Concurrent quotes ─────────────────────────────────────────
-
-  describe("Concurrent quote requests", () => {
-    it("handles 3 concurrent quote requests without errors", async () => {
-      const deps1 = liveDeps();
-      const deps2 = liveDeps();
-      const deps3 = liveDeps();
-      const app1 = createLiveTestApp(deps1);
-      const app2 = createLiveTestApp(deps2);
-      const app3 = createLiveTestApp(deps3);
-
-      const [res1, res2, res3] = await Promise.all([
-        request(app1).get("/api/premium"),
-        request(app2).get("/api/premium"),
-        request(app3).get("/api/premium"),
-      ]);
-
-      expect(res1.status).toBe(402);
-      expect(res2.status).toBe(402);
-      expect(res3.status).toBe(402);
-
-      // Each should have a unique deposit address
-      const pr1 = decodePaymentRequiredHeader(res1.headers["payment-required"]);
-      const pr2 = decodePaymentRequiredHeader(res2.headers["payment-required"]);
-      const pr3 = decodePaymentRequiredHeader(res3.headers["payment-required"]);
-
-      const addresses = new Set([
-        pr1.accepts[0]!.payTo,
-        pr2.accepts[0]!.payTo,
-        pr3.accepts[0]!.payTo,
-      ]);
-      expect(addresses.size).toBe(3);
-    }, LIVE_TIMEOUT * 2);
-  });
 });

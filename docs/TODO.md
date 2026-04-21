@@ -1,7 +1,7 @@
 # x402-1CS Gateway — Production Readiness TODO
 
 **Date:** 2026-04-21 (updated for x402scan discovery integration)
-**Based on:** Full codebase audit + 455 passing tests (438 mocked + 17 live) + typecheck clean
+**Based on:** Full codebase audit + 478 passing tests (467 mocked + 11 live) + typecheck clean
 **Target:** Prototype deployment for a small number of users
 
 ---
@@ -20,11 +20,11 @@
 | Manual receipt polling (resilient to ethers `tx.wait()` stalls) | Working |
 | TypeScript compilation | Clean |
 | In-flight settlement recovery on restart | Working |
-| Test suite (455 tests) | 100% pass |
+| Test suite (478 tests) | 100% pass |
 | Error response sanitization (no raw internals leaked to clients) | Working |
 | Address-mistake diagnosis (startup warnings + runtime error context) | Working |
 | x402scan discovery surfaces (`/openapi.json` + `/.well-known/x402` + ownership proofs) | Working (Phases 1-4 of `docs/X402SCAN_PLAN.md`) |
-| ESLint | 0 errors, 62 pre-existing warnings (intentional `no-console` + unused imports in tests) |
+| ESLint | 0 errors, 61 pre-existing warnings (intentional `no-console` + unused imports in tests) |
 
 ---
 
@@ -57,6 +57,13 @@
   - `docs/X402SCAN.md` — new operator guide: 5-step registration walkthrough, multi-key setups, subpath deployments, troubleshooting matrix, DNS `_x402` notes.
   - `docs/X402SCAN_PLAN.md` — integration design notes (7 phases, execution order, verification checklist).
   - 101 new tests: 21 `protected-routes.test.ts`, 28 `ownership-proof.test.ts`, 14 `discovery.test.ts`, 24 `openapi.test.ts`, 8 config discovery tests, 6 server.test.ts discovery-endpoint tests. All endpoints unauthenticated and served above the paid-routes loop so crawlers never hit a 402.
+- **Test-suite cleanup (Tranche E)** — A focused pass on redundancy, flake risk, and live-suite cost, informed by a parallel read-only audit. Five changes landed:
+  - **CI-flake fix** — `recoverInFlightSettlements` now returns a `RecoveryResult` with an added `tasks: Promise<void>[]` field. Production (`server.ts`) ignores it to preserve fire-and-forget semantics; tests `await Promise.all(result.tasks)` for deterministic completion instead of `setTimeout(r, 200)` sleeps. Replaced two real-timer races in `settler.test.ts`. Settler suite runtime: **610 ms → 244 ms**.
+  - **New `src/chain-prefixes.test.ts` (29 tests)** — direct unit coverage for `extractChainPrefix`, `isValidNearAccount`, `isNearNativeAsset`. These helpers gate recipient-format validation at startup and runtime; previously they had only transitive coverage through `diagnoseQuoteRequest`. Notable cases: the `.nea` typo, implicit-account (64-hex) handling, OMFT vs NEAR-native differentiation, and a disjoint-list invariant between EVM and non-EVM prefix lists.
+  - **Verifier test fixture dedupe** — `testConfig()` in `verifier.test.ts` now delegates to `mockGatewayConfig()` from the shared mocks library; ~27 lines of drift-prone duplication removed. The file's specialised inline `signEIP3009`/`signPermit2`/`mockChainReader` helpers stay — they deliberately expose invalid-signature construction for error-path tests, which the library's "always valid" helpers can't do.
+  - **Live suite trimmed 17 → 11 tests** — removed live tests that duplicated mocked coverage or tested 1CS-side invariants rather than gateway behaviour: quote-pricing-sanity, deposit-address uniqueness, small/large amount variants, state-store persistence, concurrent quotes. Live CI time: **71 s → 48 s (-32%)**. Retained: authentication, dry-quote shape, real quote with deposit address, invalid-asset / expired-deadline rejection, full 402→sign→settle flow, `X402Client.payAndFetch`, 1CS 401/400 error mapping, status endpoint.
+  - **Explicit non-goal** — settler-internal helpers (`withTimeout` timeout branch, `waitForReceipt` max-attempts branch) remained untested. Reaching them would require either exporting file-private helpers or ~50 lines of mock-provider scaffolding for ~3 lines of guard logic; net test theatre.
+  - Totals after E: **478 tests** (467 mocked + 11 live) across **19 mocked test files** + live-1cs.test.ts. Total CI time **~51 s**, down from ~73 s.
 
 ---
 

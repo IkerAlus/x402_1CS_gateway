@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { diagnoseQuoteRequest } from "./quote-engine.js";
+import { validateOwnershipProofs } from "./ownership-proof.js";
 
 /**
  * Gateway configuration schema.
@@ -79,6 +80,28 @@ export const GatewayConfigSchema = z.object({
    * Required when a browser-based x402 client needs to read `PAYMENT-REQUIRED` / `PAYMENT-RESPONSE`.
    */
   allowedOrigins: z.array(z.string().min(1)).optional(),
+
+  // ── Discovery (x402scan / .well-known / OpenAPI) ───────────────────
+  /**
+   * Full public URL of the gateway, used to emit absolute resource URLs
+   * in `/openapi.json` and `/.well-known/x402`. Example:
+   * `https://gateway.example.com`.
+   *
+   * Optional during local development; required before registering with
+   * x402scan. When unset, discovery surfaces fall back to relative paths
+   * (or skip emitting them entirely, depending on the route).
+   */
+  publicBaseUrl: z.string().url().optional(),
+  /**
+   * EIP-191 signatures proving operator control of `publicBaseUrl`.
+   * Generated out-of-band via `scripts/generate-ownership-proof.ts` so
+   * the signing key never runs inside the gateway process.
+   *
+   * Each entry is `0x` + 130 hex chars; malformed entries are logged as
+   * warnings at startup and omitted from the published discovery
+   * documents. Empty by default.
+   */
+  ownershipProofs: z.array(z.string().min(1)).default([]),
 });
 
 /** Validated gateway configuration object. */
@@ -132,12 +155,17 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Gateway
       ? env.TOKEN_SUPPORTS_EIP3009.toLowerCase() === "true"
       : undefined,
     allowedOrigins: parseAllowedOrigins(env.ALLOWED_ORIGINS),
+    publicBaseUrl: env.PUBLIC_BASE_URL ?? undefined,
+    ownershipProofs: parseCommaList(env.OWNERSHIP_PROOFS),
   };
 
   const config = GatewayConfigSchema.parse(raw);
 
   // ── Cross-validate recipient format vs destination chain ──────────
   validateRecipientFormat(config);
+
+  // ── Cross-validate ownership proofs vs publicBaseUrl ──────────────
+  validateDiscoveryConfig(config);
 
   return config;
 }
@@ -151,6 +179,19 @@ function parseAllowedOrigins(raw: string | undefined): string[] | undefined {
   if (!raw) return undefined;
   const origins = raw.split(",").map((o) => o.trim()).filter(Boolean);
   return origins.length > 0 ? origins : undefined;
+}
+
+/**
+ * Parse a comma-separated env var into a trimmed, non-empty list. Used
+ * for `OWNERSHIP_PROOFS` and any future scalar-list settings.
+ *
+ * Unlike {@link parseAllowedOrigins}, this returns an empty array (not
+ * undefined) when the variable is missing — the Zod schema's `.default([])`
+ * handles the "unset" case uniformly on the consumer side.
+ */
+function parseCommaList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 /**
@@ -178,5 +219,23 @@ function validateRecipientFormat(cfg: GatewayConfig): void {
 
   for (const hint of hints) {
     console.warn(`[x402] ⚠️  Config check: ${hint}`);
+  }
+}
+
+/**
+ * Warn at startup about misconfigured discovery settings:
+ *   - proofs without a public URL (the proofs are dead weight)
+ *   - malformed proof signatures (wrong hex shape)
+ *   - proofs that fail EIP-191 recovery against the canonical message
+ *
+ * All outcomes are **warnings** rather than errors — discovery is a
+ * publication feature, and the gateway's core payment flow is unaffected
+ * if the discovery documents are skipped or served empty. The operator
+ * can fix proofs and restart when convenient.
+ */
+function validateDiscoveryConfig(cfg: GatewayConfig): void {
+  const { warnings } = validateOwnershipProofs(cfg.ownershipProofs, cfg.publicBaseUrl);
+  for (const warning of warnings) {
+    console.warn(`[x402] ⚠️  Discovery check: ${warning}`);
   }
 }

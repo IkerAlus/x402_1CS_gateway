@@ -14,6 +14,10 @@ import cors from "cors";
 import request from "supertest";
 import { buildCorsOptions } from "./cors-options.js";
 import type { GatewayConfig } from "./config.js";
+import { buildWellKnownDocument } from "./discovery.js";
+import { buildOpenApiDocument } from "./openapi.js";
+import { buildProtectedRoutes } from "./protected-routes.js";
+import { mockGatewayConfig } from "./mocks/mock-config.js";
 
 /** Minimal app mirroring `server.ts` middleware chain. */
 function buildApp(cfg: Pick<GatewayConfig, "allowedOrigins">): express.Express {
@@ -73,5 +77,114 @@ describe("CORS + helmet wiring", () => {
     // cors package default: header simply omitted (request still succeeds;
     // browser enforces the same-origin policy on the client side).
     expect(badRes.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Discovery endpoints — /.well-known/x402 and /openapi.json
+//
+// Exercises the exact wiring used by server.ts: build the two documents
+// once and mount them as handlers. Confirms the crawler-facing surface
+// is JSON, unauthenticated, and carries the x402scan-required fields.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("Discovery endpoints", () => {
+  function buildDiscoveryApp(
+    overrides: Partial<GatewayConfig> = {},
+  ): { app: express.Express; cfg: GatewayConfig } {
+    const cfg = mockGatewayConfig(overrides);
+    const routes = buildProtectedRoutes(cfg);
+    const wellKnown = buildWellKnownDocument(cfg, routes);
+    const openApi = buildOpenApiDocument(
+      { title: "x402-1cs-gateway", version: "0.1.0", description: "test build" },
+      cfg,
+      routes,
+    );
+    const app = express();
+    app.set("trust proxy", 1);
+    app.use(helmet());
+    app.use(cors(buildCorsOptions(cfg)));
+    app.use(express.json({ limit: "1mb" }));
+    app.get("/.well-known/x402", (_req, res) => {
+      res.type("application/json").json(wellKnown);
+    });
+    app.get("/openapi.json", (_req, res) => {
+      res.type("application/json").json(openApi);
+    });
+    return { app, cfg };
+  }
+
+  it("serves /.well-known/x402 as application/json, unauthenticated", async () => {
+    const { app } = buildDiscoveryApp({
+      publicBaseUrl: "https://gateway.example.com",
+    });
+    const res = await request(app).get("/.well-known/x402");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/application\/json/);
+    expect(res.body.version).toBe(1);
+    expect(Array.isArray(res.body.resources)).toBe(true);
+    expect(Array.isArray(res.body.ownershipProofs)).toBe(true);
+  });
+
+  it("serves /.well-known/x402 with absolute resource URLs", async () => {
+    const { app } = buildDiscoveryApp({
+      publicBaseUrl: "https://gateway.example.com",
+    });
+    const res = await request(app).get("/.well-known/x402");
+    expect(res.body.resources).toContain("https://gateway.example.com/api/premium");
+  });
+
+  it("serves /openapi.json as application/json, unauthenticated", async () => {
+    const { app } = buildDiscoveryApp({
+      publicBaseUrl: "https://gateway.example.com",
+    });
+    const res = await request(app).get("/openapi.json");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/application\/json/);
+    expect(res.body.openapi).toMatch(/^3\./);
+    expect(res.body.info.title).toBeDefined();
+    expect(res.body.info.version).toBeDefined();
+    expect(res.body.paths).toBeDefined();
+  });
+
+  it("/openapi.json paths carry x402 security + x-payment-info", async () => {
+    const { app } = buildDiscoveryApp({
+      publicBaseUrl: "https://gateway.example.com",
+    });
+    const res = await request(app).get("/openapi.json");
+    const op = res.body.paths["/api/premium"].get;
+    expect(op.security).toEqual([{ x402: [] }]);
+    expect(op["x-payment-info"].protocols).toBe("x402");
+    expect(op.responses["402"]).toBeDefined();
+    expect(res.body.components.securitySchemes.x402).toMatchObject({
+      type: "http",
+      scheme: "x402",
+    });
+  });
+
+  it("both endpoints skip the x402 middleware (never 402)", async () => {
+    // If these endpoints were ever mounted under the paid-route loop, a
+    // buyer without a PAYMENT-SIGNATURE header would get 402 here too.
+    // That would break the discovery contract.
+    const { app } = buildDiscoveryApp();
+
+    const r1 = await request(app).get("/.well-known/x402");
+    expect(r1.status).not.toBe(402);
+
+    const r2 = await request(app).get("/openapi.json");
+    expect(r2.status).not.toBe(402);
+  });
+
+  it("both endpoints succeed even when publicBaseUrl is unset (local dev)", async () => {
+    const { app } = buildDiscoveryApp({ publicBaseUrl: undefined });
+
+    const wellKnown = await request(app).get("/.well-known/x402");
+    expect(wellKnown.status).toBe(200);
+    expect(wellKnown.body.resources).toEqual([]);
+
+    const openApi = await request(app).get("/openapi.json");
+    expect(openApi.status).toBe(200);
+    expect(openApi.body.openapi).toMatch(/^3\./);
+    expect(openApi.body.servers).toBeUndefined();
   });
 });

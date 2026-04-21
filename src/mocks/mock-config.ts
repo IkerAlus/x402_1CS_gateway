@@ -127,6 +127,9 @@ export function mockGatewayConfig(
     tokenName: TOKEN_NAME,
     tokenVersion: TOKEN_VERSION,
     tokenSupportsEip3009: true,
+    // Discovery defaults for tests: no URL, no proofs — keep the
+    // gateway's core-payment tests independent of discovery publication.
+    ownershipProofs: [],
     ...overrides,
   };
 }

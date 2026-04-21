@@ -264,4 +264,91 @@ describe("loadConfigFromEnv", () => {
       expect(logged).toBe("");
     });
   });
+
+  describe("discovery config (PUBLIC_BASE_URL + OWNERSHIP_PROOFS)", () => {
+    let warnSpy: ReturnType<typeof vi.spyOn>;
+
+    afterEach(() => {
+      warnSpy?.mockRestore();
+    });
+
+    it("defaults ownershipProofs to [] and publicBaseUrl to undefined", () => {
+      const cfg = loadConfigFromEnv(validEnv() as unknown as NodeJS.ProcessEnv);
+      expect(cfg.ownershipProofs).toEqual([]);
+      expect(cfg.publicBaseUrl).toBeUndefined();
+    });
+
+    it("parses PUBLIC_BASE_URL when set", () => {
+      const cfg = loadConfigFromEnv({
+        ...validEnv(),
+        PUBLIC_BASE_URL: "https://gateway.example.com",
+      } as unknown as NodeJS.ProcessEnv);
+      expect(cfg.publicBaseUrl).toBe("https://gateway.example.com");
+    });
+
+    it("rejects a non-URL PUBLIC_BASE_URL at schema parse", () => {
+      expect(() =>
+        loadConfigFromEnv({
+          ...validEnv(),
+          PUBLIC_BASE_URL: "not-a-url",
+        } as unknown as NodeJS.ProcessEnv),
+      ).toThrow();
+    });
+
+    it("parses OWNERSHIP_PROOFS as a trimmed, comma-separated list", () => {
+      const cfg = loadConfigFromEnv({
+        ...validEnv(),
+        OWNERSHIP_PROOFS: " 0xaaa ,0xbbb ,  ,0xccc",
+      } as unknown as NodeJS.ProcessEnv);
+      expect(cfg.ownershipProofs).toEqual(["0xaaa", "0xbbb", "0xccc"]);
+    });
+
+    it("warns on startup when OWNERSHIP_PROOFS is set but PUBLIC_BASE_URL is not", () => {
+      warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      loadConfigFromEnv({
+        ...validEnv(),
+        OWNERSHIP_PROOFS: "0x" + "a".repeat(130),
+      } as unknown as NodeJS.ProcessEnv);
+      const logged = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain("PUBLIC_BASE_URL is not");
+    });
+
+    it("warns on startup when an ownership proof is malformed", () => {
+      warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      loadConfigFromEnv({
+        ...validEnv(),
+        PUBLIC_BASE_URL: "https://gateway.example.com",
+        OWNERSHIP_PROOFS: "not-a-signature",
+      } as unknown as NodeJS.ProcessEnv);
+      const logged = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain("malformed");
+    });
+
+    it("emits an informational warning with the recovered signer for valid proofs", async () => {
+      // Generate a real proof for a known URL so the recovery line shows up.
+      const { ethers } = await import("ethers");
+      const { signOwnershipProof } = await import("./ownership-proof.js");
+      const wallet = new ethers.Wallet("0x" + "ef".repeat(32));
+      const proof = await signOwnershipProof(wallet, "https://gateway.example.com");
+
+      warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      loadConfigFromEnv({
+        ...validEnv(),
+        PUBLIC_BASE_URL: "https://gateway.example.com",
+        OWNERSHIP_PROOFS: proof,
+      } as unknown as NodeJS.ProcessEnv);
+      const logged = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).toContain("recovered to");
+      expect(logged).toContain(wallet.address.toLowerCase());
+    });
+
+    it("does not warn when discovery is fully unset", () => {
+      warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      loadConfigFromEnv(validEnv() as unknown as NodeJS.ProcessEnv);
+      const logged = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      // The recipient-format block may still warn on other things, so
+      // specifically assert we see nothing about discovery.
+      expect(logged).not.toContain("Discovery check");
+    });
+  });
 });

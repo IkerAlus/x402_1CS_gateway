@@ -15,15 +15,20 @@ x402_1CS_gateway/
 │   ├── config.ts              # Zod-validated env config
 │   ├── cors-options.ts        # CORS options builder (helmet+cors wired in server.ts)
 │   ├── middleware.ts           # Express x402 middleware
-│   ├── quote-engine.ts        # 1CS quote building
+│   ├── quote-engine.ts        # 1CS quote building + diagnoseQuoteRequest
 │   ├── verifier.ts            # EIP-3009/Permit2 signature verification
 │   ├── settler.ts             # Broadcast, deposit notify, status polling
 │   ├── store.ts               # State store (SQLite / in-memory)
 │   ├── provider-pool.ts       # RPC endpoint pool with failover
 │   ├── rate-limiter.ts        # Per-IP rate limiting, settlement cap, quote GC
-│   ├── types.ts               # Shared type definitions
+│   ├── chain-prefixes.ts      # Shared NEP-141 chain metadata + helpers
+│   ├── protected-routes.ts    # Registry of paid routes (single source of truth)
+│   ├── discovery.ts           # /.well-known/x402 document builder
+│   ├── openapi.ts             # /openapi.json document builder
+│   ├── ownership-proof.ts     # x402scan ownership-proof canonical message + EIP-191 helpers
+│   ├── types.ts               # Shared type definitions (including ErrorContext)
 │   ├── index.ts               # Library entry point
-│   ├── server.test.ts         # CORS + helmet wiring tests (3)
+│   ├── server.test.ts         # CORS + helmet + discovery endpoint tests (9)
 │   ├── client/                # Buyer-side client library
 │   │   ├── index.ts           #    Public API re-exports
 │   │   ├── types.ts           #    Client-side type definitions
@@ -34,13 +39,16 @@ x402_1CS_gateway/
 │   ├── mocks/                 # Shared test mocks
 │   └── *.test.ts              # Unit & integration tests
 ├── scripts/
-│   ├── test-client.ts         # CLI test client (dry-run / live)
-│   ├── verify-api-key.ts      # 1CS JWT verification
-│   └── test-1cs-quote.sh      # Shell script for raw quote testing
+│   ├── test-client.ts                   # CLI test client (dry-run / live)
+│   ├── verify-api-key.ts                # 1CS JWT verification
+│   ├── generate-ownership-proof.ts      # x402scan ownership-proof signer CLI
+│   └── test-1cs-quote.sh                # Shell script for raw quote testing
 ├── docs/
 │   ├── TODO.md                # Production-readiness checklist
 │   ├── DEPLOYMENT_GUIDE.md    # Deployment and production setup
 │   ├── USER_GUIDE.md          # Buyer-facing usage guide
+│   ├── X402SCAN.md            # x402scan registration guide
+│   ├── X402SCAN_PLAN.md       # x402scan integration design notes
 │   ├── Facilitator_keys_guidance.md  # Facilitator key management guide
 │   ├── TEST_RESULTS.md        # Latest test run results
 │   ├── verifier-flow.svg
@@ -480,9 +488,39 @@ const client = new X402Client({
 });
 ```
 
-## 8. Running the test suite
+## 8. Discovery (x402scan, /.well-known, OpenAPI)
 
-The project has 337 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
+The gateway exposes three surfaces that discovery crawlers like [x402scan](https://www.x402scan.com/) use to index paid resources:
+
+| Path | Contents |
+|---|---|
+| `GET /openapi.json` | OpenAPI 3.1 document with `x-payment-info`, `x-discovery.ownershipProofs`, per-route `security: [{x402: []}]` |
+| `GET /.well-known/x402` | Fan-out JSON (`version`, `resources[]`, `ownershipProofs[]`) — fallback surface and DNS `_x402` target |
+| Every paid route | Runtime x402 `PAYMENT-REQUIRED` envelope (v2) on the 402 response |
+
+Both discovery endpoints are unauthenticated and always served — including during local development — so crawlers can probe them without credentials. A single registry (`src/protected-routes.ts`) drives all three surfaces: add one entry and OpenAPI, `/.well-known/x402`, and the Express mount pick it up automatically.
+
+### Enable discovery
+
+Set two env vars:
+
+```bash
+PUBLIC_BASE_URL=https://gateway.example.com
+OWNERSHIP_PROOFS=0x...         # generated with scripts/generate-ownership-proof.ts
+```
+
+The gateway emits absolute resource URLs and includes your proofs in both documents. See **[docs/X402SCAN.md](./docs/X402SCAN.md)** for the full step-by-step registration guide, including proof generation, multi-key setups, subpath deployments, and a troubleshooting matrix.
+
+### Verify locally
+
+```bash
+curl -s http://localhost:3402/.well-known/x402 | jq
+curl -s http://localhost:3402/openapi.json | jq '{openapi, info, paths: (.paths|keys)}'
+```
+
+## 9. Running the test suite
+
+The project has 438 unit/integration tests plus 17 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
 
 ### npm scripts
 
@@ -502,22 +540,26 @@ npm run format:check  # Prettier check
 npm test
 ```
 
-Runs 337 tests across 14 test files with fully mocked external dependencies (a 15th file, `live-1cs.test.ts`, runs only when `ONE_CLICK_JWT` is set). No API key, funds, or network access required. Covers:
+Runs 438 tests across 18 test files with fully mocked external dependencies (a 19th file, `live-1cs.test.ts`, runs only when `ONE_CLICK_JWT` is set). No API key, funds, or network access required. Covers:
 
 - **State store** (61 tests) — CRUD, TTL, concurrency, phase transitions, listByPhase, `listExpired` phase-filter
 - **Settler** (45 tests) — broadcast, deposit notification, status polling, timeout, **in-flight recovery**
 - **Quote engine** (40 tests) — quote building, deadline validation, fee calculation, recipient/asset diagnosis, error-context threading
 - **Verifier** (34 tests) — EIP-3009 and Permit2 signature recovery, balance checks, nonce replay, timing
+- **Ownership proof** (28 tests) — canonical message, URL normalisation, EIP-191 sign/recover round-trip, startup validation
+- **Config** (27 tests) — Zod validation, defaults, environment loading, CORS allowlist parsing, recipient-format warnings, discovery env vars
 - **Rate limiter** (25 tests) — per-IP quote limiting, settlement concurrency cap, quote GC (never deletes in-flight)
+- **OpenAPI builder** (24 tests) — OpenAPI 3.1 document structure, `x-payment-info`, `x-discovery`, x402 security scheme, per-operation responses
 - **Types** (22 tests) — type guards, CAIP-2 parsing, error classes
+- **Protected routes registry** (21 tests) — route shape validation, pricing modes, factory binding, invocability invariants
+- **Middleware** (19 tests) — Express middleware request/response handling, error mapping, error sanitization + correlation IDs, server-side context logging
 - **Client X402Client** (18 tests) — full protocol flow against real Express gateway with mocked chain deps
+- **Discovery builder** (14 tests) — `/.well-known/x402` document shape, absolute URL joining, proof filtering
 - **E2E** (14 tests) — full gateway HTTP protocol compliance (402 -> sign -> 200)
 - **Mock integration** (14 tests) — multi-chain parametrized flow (NEAR, Arbitrum, Ethereum, Polygon, Stellar, Solana)
-- **Middleware** (19 tests) — Express middleware request/response handling, error mapping, error sanitization + correlation IDs, server-side context logging
 - **Client signer** (12 tests) — EIP-3009/Permit2 signature round-trips, nonce uniqueness, chain ID parsing
-- **Config** (19 tests) — Zod validation, defaults, environment loading, CORS allowlist parsing, recipient-format warnings
 - **Provider pool** (11 tests) — RPC rotation, failover, health checks
-- **Server** (3 tests) — CORS preflight, header exposure, origin allowlist enforcement
+- **Server** (9 tests) — CORS preflight, header exposure, origin allowlist enforcement, discovery endpoints (well-known + OpenAPI)
 
 ### Live 1CS API tests
 
@@ -538,7 +580,7 @@ ONE_CLICK_JWT=<your JWT>
 ONE_CLICK_BASE_URL=https://1click.chaindefuser.com
 ```
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 ### Gateway exits with Zod validation error
 
@@ -611,7 +653,7 @@ The gateway rate-limits 402 requests per IP (default: 20 per minute). If you hit
 
 The gateway limits concurrent in-flight settlements (default: 10). If all slots are occupied, new payment submissions return 503. Adjust `MAX_CONCURRENT_SETTLEMENTS` in `.env` if needed.
 
-## 10. Architecture overview
+## 11. Architecture overview
 
 ### Component real vs mocked matrix
 

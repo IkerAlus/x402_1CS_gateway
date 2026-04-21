@@ -1,7 +1,7 @@
 # x402-1CS Gateway — Production Readiness TODO
 
-**Date:** 2026-04-21
-**Based on:** Full codebase audit + 354 passing tests (337 mocked + 17 live) + typecheck clean
+**Date:** 2026-04-21 (updated for x402scan discovery integration)
+**Based on:** Full codebase audit + 455 passing tests (438 mocked + 17 live) + typecheck clean
 **Target:** Prototype deployment for a small number of users
 
 ---
@@ -20,10 +20,11 @@
 | Manual receipt polling (resilient to ethers `tx.wait()` stalls) | Working |
 | TypeScript compilation | Clean |
 | In-flight settlement recovery on restart | Working |
-| Test suite (354 tests) | 100% pass |
+| Test suite (455 tests) | 100% pass |
 | Error response sanitization (no raw internals leaked to clients) | Working |
 | Address-mistake diagnosis (startup warnings + runtime error context) | Working |
-| ESLint | 0 errors, 59 pre-existing warnings (intentional `no-console` + unused imports in tests) |
+| x402scan discovery surfaces (`/openapi.json` + `/.well-known/x402` + ownership proofs) | Working (Phases 1-4 of `docs/X402SCAN_PLAN.md`) |
+| ESLint | 0 errors, 62 pre-existing warnings (intentional `no-console` + unused imports in tests) |
 
 ---
 
@@ -46,6 +47,16 @@
 - **GC no longer deletes in-flight settlements** — `QuoteGarbageCollector.sweep()` previously called `store.listExpired(cutoffMs)` with no phase filter (`src/rate-limiter.ts:285`), so any swap older than `quoteGcGracePeriodMs` (default 5 min) was deleted — including swaps still in `BROADCASTING`/`BROADCAST`/`POLLING`. Since `maxPollTimeMs` is also 5 min by default, a slow 1CS route would collide exactly with the GC window, breaking the buyer's HTTP response mid-settlement (1CS still processed the swap independently — not fund loss, but silently broken UX). Fix: introduced `GC_ELIGIBLE_PHASES` (`QUOTED`, `EXPIRED`, `SETTLED`, `FAILED`) in `types.ts` and extended `StateStore.listExpired(olderThanMs, phases?)` with an optional phase filter. The GC passes `GC_ELIGIBLE_PHASES`, so in-flight states are never touched. 8 new tests (6 store × both implementations + 2 rate-limiter integration).
 - **Error response sanitization + correlation IDs** — The middleware previously forwarded raw `err.message` (for both `GatewayError` and unknown errors) straight into HTTP 500/503/502/504 responses, leaking internals (upstream 1CS error bodies, facilitator wallet balances, RPC URLs with keys, file paths). Fix: `handleError()` in `src/middleware.ts` now maps each `GatewayError.code` to a curated client-safe message via `CLIENT_SAFE_MESSAGES`, returns a fixed generic message for any non-`GatewayError`, and attaches an 8-char hex `correlationId` to every error response body (and to the sanitized `PAYMENT-RESPONSE` `errorMessage` for 502/504). The full error detail — name, code, HTTP status, message, stack, method, path, IP — is written server-side via `logServerError()` under the same correlation ID so operators can grep for one specific request. 5 new tests in `src/middleware.test.ts` cover: 1CS trace leak stripped, facilitator wei balance stripped, non-`GatewayError` returns generic 500, sanitized `PAYMENT-RESPONSE` header, per-response unique correlation IDs.
 - **Server-side diagnosis of recipient / asset mistakes** — A live payment failure with `MERCHANT_RECIPIENT=merchantx402.nea` (typo: `.nea` instead of `.near`) landed with a generic `1CS quote rejected (400): Internal server error` in the server log, giving the operator no indication that it was an address typo. Fix: `GatewayError` now carries an optional `context: ErrorContext` bag used for server-log enrichment (never client-facing). A new `diagnoseQuoteRequest()` helper in `src/quote-engine.ts` inspects outgoing quote fields for known-bad patterns — invalid NEAR account (missing `.near`/`.tg` TLA), EVM-vs-NEAR/Stellar/Solana recipient mismatch, whitespace or `#` characters (from `.env` leading-space or inline-comment bugs), and unknown chain prefixes. `requestQuote()` attaches `{ originAsset, destinationAsset, recipient, amount, refundTo, upstreamStatus, hints[] }` as `context` on every error it throws (400 / 401 / 5xx / network). The middleware's `logServerError()` emits this context as a pretty-printed JSON second stderr line under the same correlation ID so operators see the likely cause immediately. The same diagnoser runs at startup (`config.validateRecipientFormat()`) and warns when any hint fires against the configured merchant values — catching typos before the first buyer arrives. Chain-prefix constants + helpers (`EVM_CHAIN_PREFIXES`, `NON_EVM_CHAIN_PREFIXES`, `extractChainPrefix`, `isValidNearAccount`, `isNearNativeAsset`) are extracted into a shared `src/chain-prefixes.ts` leaf module. Bonus fix: `requestQuote` now passes through `GatewayError` instances from injected `quoteFn`s rather than re-wrapping as `ServiceUnavailableError`. 23 new tests (7 config, 14 quote-engine diagnose + context-threading, 2 middleware log-context).
+- **x402scan discovery surfaces** — The gateway is now discoverable by [x402scan](https://www.x402scan.com/) and the IETF `_x402` TXT-record ecosystem. Four phases of `docs/X402SCAN_PLAN.md` landed (Phase 5 Bazaar `extensions.bazaar.info` is intentionally deferred — see the re-assessment in the plan doc; current OpenAPI schemas cover the invocability requirement). Additions:
+  - `src/protected-routes.ts` — single-source-of-truth registry (`ProtectedRoute` + `FixedPricing`/`DynamicPricing` + `validateProtectedRoutes` + `buildProtectedRoutes(cfg)` factory). All paid routes now come from this registry; `server.ts` mounts them in a loop instead of hardcoding `/api/premium`.
+  - `src/ownership-proof.ts` — EIP-191 canonical message `x402 ownership of <normalised URL>`, shape validation, recovery helper, and `validateOwnershipProofs()` used by `config.ts` at startup. The signing key never touches the request path.
+  - `src/discovery.ts` — pure builder for `GET /.well-known/x402` (`version`, `resources[]`, `ownershipProofs[]`). Joins the public base URL with each route path (supports subpath deployments, drops default ports, etc).
+  - `src/openapi.ts` — pure builder for `GET /openapi.json` (OpenAPI 3.1 with `x-payment-info`, `x-discovery.ownershipProofs`, per-route `security: [{x402: []}]`, `responses.402`, requestBody for POST routes with `inputSchema`, responses.200 schema from `outputSchema`).
+  - `src/config.ts` — two new env vars: `PUBLIC_BASE_URL` (optional, normalised for use in both documents) and `OWNERSHIP_PROOFS` (comma-separated list). Startup validation warns on malformed proofs and logs the recovered signer of each valid one so the operator can verify at a glance.
+  - `scripts/generate-ownership-proof.ts` — stand-alone CLI that signs the canonical message and prints the signature ready to paste into `.env`. Self-verifies by recovering the signer before printing.
+  - `docs/X402SCAN.md` — new operator guide: 5-step registration walkthrough, multi-key setups, subpath deployments, troubleshooting matrix, DNS `_x402` notes.
+  - `docs/X402SCAN_PLAN.md` — integration design notes (7 phases, execution order, verification checklist).
+  - 101 new tests: 21 `protected-routes.test.ts`, 28 `ownership-proof.test.ts`, 14 `discovery.test.ts`, 24 `openapi.test.ts`, 8 config discovery tests, 6 server.test.ts discovery-endpoint tests. All endpoints unauthenticated and served above the paid-routes loop so crawlers never hit a 402.
 
 ---
 

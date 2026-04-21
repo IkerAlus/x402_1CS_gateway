@@ -26,6 +26,10 @@ import {
 import { createX402Middleware } from "./middleware.js";
 import type { MiddlewareDeps } from "./middleware.js";
 import { createRateLimiting, destroyRateLimiting } from "./rate-limiter.js";
+import { buildProtectedRoutes } from "./protected-routes.js";
+import { buildWellKnownDocument } from "./discovery.js";
+import { buildOpenApiDocument } from "./openapi.js";
+import { createRequire } from "node:module";
 
 async function main(): Promise<void> {
   // ── 0. Global error handlers ───────────────────────────────────────
@@ -145,6 +149,51 @@ async function main(): Promise<void> {
 
   app.use(express.json({ limit: "1mb" }));
 
+  // ── Protected-routes registry (single source of truth) ────────────
+  //
+  // Built once here so the discovery surfaces below AND the paid-route
+  // loop further down see the same registry. The factory validates the
+  // list and binds per-request handlers with access to `cfg`.
+  const protectedRoutes = buildProtectedRoutes(cfg);
+
+  // ── Discovery surfaces (x402scan, DNS `_x402`, generic OpenAPI) ────
+  //
+  // Both endpoints are served BEFORE any paid routes so they are never
+  // accidentally gated by the x402 middleware. They are unauthenticated
+  // and rate-limit-exempt by design — discovery crawlers (x402scan,
+  // `discoverx402` nodes) hit them repeatedly to index the gateway.
+  //
+  // Documents are computed once at startup: both the routes registry
+  // and the config are immutable for the lifetime of the process, so
+  // caching is safe and avoids per-request JSON construction.
+  const wellKnownDoc = buildWellKnownDocument(cfg, protectedRoutes);
+  // Read package metadata once — keeps the OpenAPI builder a pure function.
+  // `createRequire(import.meta.url)` is the supported way to load JSON
+  // from an ESM module (TypeScript won't let us use `assert { type: "json" }`
+  // without rewriting tsconfig module resolution).
+  const pkgRequire = createRequire(import.meta.url);
+  const pkg = pkgRequire("../package.json") as { name: string; version: string; description?: string };
+  const openApiDoc = buildOpenApiDocument(
+    {
+      title: pkg.name,
+      version: pkg.version,
+      description: pkg.description,
+    },
+    cfg,
+    protectedRoutes,
+  );
+
+  app.get("/.well-known/x402", (_req, res) => {
+    res.type("application/json").json(wellKnownDoc);
+  });
+  app.get("/openapi.json", (_req, res) => {
+    res.type("application/json").json(openApiDoc);
+  });
+  console.log(
+    `[x402-1CS] Discovery — /.well-known/x402 (${wellKnownDoc.resources.length} resource(s), ` +
+      `${wellKnownDoc.ownershipProofs.length} proof(s)), /openapi.json (OpenAPI 3.1)`,
+  );
+
   // Health check (no payment required)
   app.get("/health", (_req, res) => {
     res.json({
@@ -165,16 +214,22 @@ async function main(): Promise<void> {
     });
   });
 
-  // Protected route — requires x402 payment
-  app.get("/api/premium", createX402Middleware(deps), (_req, res) => {
-    res.json({
-      message: "You've paid! Here is your premium content.",
-      timestamp: new Date().toISOString(),
-      merchant: cfg.merchantRecipient,
-      amountReceived: cfg.merchantAmountOut,
-      destinationAsset: cfg.merchantAssetOut,
-    });
-  });
+  // ── Protected routes — mounted from the registry ──────────────────
+  //
+  // Every entry in the registry is gated by the x402 middleware and
+  // followed by its handler. The same registry drives `/openapi.json`
+  // and `/.well-known/x402` above, so adding a new paid endpoint is
+  // one registry entry — no edits here.
+  const x402Middleware = createX402Middleware(deps);
+  for (const route of protectedRoutes) {
+    const method = route.method.toLowerCase() as "get" | "post";
+    app[method](route.path, x402Middleware, route.handler);
+  }
+  console.log(
+    `[x402-1CS] Mounted ${protectedRoutes.length} protected route(s): ${protectedRoutes
+      .map((r) => `${r.method} ${r.path}`)
+      .join(", ")}`,
+  );
 
   // ── 7. Start server ────────────────────────────────────────────────
   const port = parseInt(process.env.PORT ?? "3402", 10);
@@ -191,11 +246,16 @@ async function main(): Promise<void> {
     console.log(`  x402-1CS Gateway running on http://localhost:${port}`);
     console.log("");
     console.log("  Endpoints:");
-    console.log(`    GET /health       — health check (no payment)`);
-    console.log(`    GET /api/premium  — x402 protected resource`);
+    console.log(`    GET /health                — health check (no payment)`);
+    console.log(`    GET /openapi.json          — OpenAPI 3.1 spec (discovery)`);
+    console.log(`    GET /.well-known/x402      — x402 resource manifest (discovery)`);
+    for (const route of protectedRoutes) {
+      const label = `${route.method} ${route.path}`.padEnd(26);
+      console.log(`    ${label} — ${route.summary} (x402)`);
+    }
     console.log("");
     console.log("  To test the 402 flow:");
-    console.log(`    curl -i http://localhost:${port}/api/premium`);
+    console.log(`    curl -i http://localhost:${port}${protectedRoutes[0]!.path}`);
     console.log("═══════════════════════════════════════════════════════");
     console.log("");
   });

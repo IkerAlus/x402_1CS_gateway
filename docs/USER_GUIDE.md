@@ -182,6 +182,39 @@ The response includes a `PAYMENT-RESPONSE` header with settlement details:
 }
 ```
 
+### Optional: the `extra.crossChain` informational block
+
+Every 402 envelope from this gateway also carries a gateway-specific informational block at `accepts[0].extra.crossChain`. It describes the underlying cross-chain swap — the 1CS quote ID, expected destination amount, refund destination, USD values, and (on chains that need one) a deposit memo. The block is **purely informational**: it is **never used for signing**. Your client can safely ignore it if you don't need it.
+
+If you do want to surface richer UX — "you'll authorize $1.05 on Base, the merchant will receive 1.00 USDT on NEAR, refunds go to `0x…`" — read it like this:
+
+```ts
+const cross = accepted.extra.crossChain as
+  | {
+      protocol: "1cs";
+      quoteId: string;
+      destinationRecipient: string;
+      destinationAsset: string;
+      amountOut: string;
+      amountOutFormatted: string;
+      amountOutUsd: string;
+      amountInUsd: string;
+      refundFee?: string;
+      refundTo: string;
+      depositMemo?: string;
+    }
+  | undefined;
+
+if (cross?.protocol === "1cs") {
+  console.log(
+    `Paying $${cross.amountInUsd} → merchant receives ${cross.amountOutFormatted} ` +
+    `(${cross.destinationAsset}). Refunds go to ${cross.refundTo}. Quote: ${cross.quoteId}`,
+  );
+}
+```
+
+All fields are strings (or numbers for the few numeric ones). Optional fields (`refundFee`, `depositMemo`) are omitted when the destination chain doesn't require them — check for key presence rather than null. The full JSON schema is published at `/openapi.json#/components/schemas/CrossChainQuoteExtra` if you want a machine-readable contract.
+
 ---
 
 ## Easiest method: using the X402Client library

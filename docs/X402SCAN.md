@@ -217,6 +217,85 @@ Every entry **must** have an `inputSchema` — x402scan marks routes without one
 
 ---
 
+## What's in the 402 envelope
+
+When x402scan (or any other indexer / integrator) probes a paid route, the gateway returns HTTP 402 with a base64-encoded `PAYMENT-REQUIRED` header. Decoded, every envelope carries an informational cross-chain block at `accepts[0].extra.crossChain` describing the underlying 1Click Swap.
+
+**The block never affects signing.** The EVM `exact` scheme's signing inputs live on the sibling keys `extra.name`, `extra.version`, plus the top-level `asset` / `network`. Clients that don't care about cross-chain metadata ignore the whole object.
+
+### Machine-readable shape
+
+The OpenAPI document (`/openapi.json`) advertises the shape at:
+
+- Top-level **`x-crosschain`** — protocol discriminator + pointer:
+  ```json
+  "x-crosschain": {
+    "protocol": "1cs",
+    "schema": "#/components/schemas/CrossChainQuoteExtra"
+  }
+  ```
+- **`components.schemas.CrossChainQuoteExtra`** — JSON Schema for the block:
+  ```json
+  {
+    "type": "object",
+    "required": [
+      "protocol", "quoteId", "destinationRecipient", "destinationAsset",
+      "amountOut", "amountOutFormatted", "amountOutUsd", "amountInUsd", "refundTo"
+    ],
+    "properties": {
+      "protocol":             { "type": "string", "enum": ["1cs"] },
+      "quoteId":              { "type": "string" },
+      "destinationRecipient": { "type": "string" },
+      "destinationAsset":     { "type": "string" },
+      "amountOut":            { "type": "string" },
+      "amountOutFormatted":   { "type": "string" },
+      "amountOutUsd":         { "type": "string" },
+      "amountInUsd":          { "type": "string" },
+      "refundFee":            { "type": "string" },
+      "refundTo":             { "type": "string" },
+      "depositMemo":          { "type": "string" }
+    }
+  }
+  ```
+- Each paid operation's **`responses.402.description`** explicitly mentions `accepts[0].extra.crossChain` and cross-links to the schema.
+
+### Field meaning
+
+| Key | Purpose |
+|---|---|
+| `protocol` | Always `"1cs"`. Clients key on this before reading further. |
+| `quoteId` | 1CS quote correlation ID — the same identifier logged by the gateway and echoed on the eventual `PAYMENT-RESPONSE` header. Use it when opening a support ticket. |
+| `destinationRecipient` | The merchant's recipient on the destination chain. |
+| `destinationAsset` | The 1CS asset ID the merchant receives. |
+| `amountOut` / `amountOutFormatted` | Expected destination amount (smallest unit + human-readable). |
+| `amountOutUsd` / `amountInUsd` | USD values on both sides, for disclosure UX. |
+| `refundFee` | Fee 1CS charges if the deposit is refunded. Optional — absent when the destination chain has no refund fee. |
+| `refundTo` | Address that receives refunds from failed swaps. |
+| `depositMemo` | **Chain-dependent.** Required by Stellar, XRP, and Cosmos-family chains; omitted otherwise. Silent failures happen if a client drops this when the destination chain needs it. |
+
+### What's NOT in the block
+
+The gateway deliberately omits a few fields the 1CS SDK also returns:
+
+- `minAmountIn`, `deadline`, `timeEstimate` — buyer doesn't need them (the first is a 1CS internal threshold, the second is already encoded in the top-level `maxTimeoutSeconds`, the third is a heuristic).
+- `quoteRequest` — echoes gateway config; kept internal.
+- `virtualChainRecipient` / `virtualChainRefundRecipient` / `customRecipientMsg` — 1CS routing internals.
+
+### Verifying from a probe
+
+```bash
+# OpenAPI advertises the shape:
+curl -s https://gateway.example.com/openapi.json \
+  | jq '."x-crosschain", .components.schemas.CrossChainQuoteExtra'
+
+# A real 402 envelope carries the block:
+curl -si https://gateway.example.com/api/premium \
+  | grep -i '^payment-required:' | awk '{print $2}' | tr -d '\r\n' \
+  | base64 -d | jq '.accepts[0].extra.crossChain'
+```
+
+---
+
 ## DNS `_x402` TXT records (optional, infrastructure)
 
 The IETF `_x402` TXT record draft points resolvers at `/.well-known/x402`. If you have DNS zone access for the gateway's domain, publish:

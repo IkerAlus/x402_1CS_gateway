@@ -171,7 +171,11 @@ describe("buildPaymentRequirements", () => {
     expect(req.amount).toBe("1050000"); // amountIn from the quote
     expect(req.payTo).toBe("0xDEADBEEF1234567890abcdef1234567890abcdef");
     expect(req.maxTimeoutSeconds).toBeGreaterThan(0);
-    expect(req.extra).toEqual({
+    // Scheme-signing fields (name/version/assetTransferMethod) stay intact.
+    // The informational `crossChain` sibling is covered in its own test
+    // block below, so we use `toMatchObject` here rather than `toEqual`
+    // to allow the extra key without weakening the invariant.
+    expect(req.extra).toMatchObject({
       name: "USDC",
       version: "2",
       assetTransferMethod: "eip3009",
@@ -457,7 +461,9 @@ describe("mapToPaymentRequirements", () => {
     expect(req.amount).toBe("1050000");
     expect(req.payTo).toBe("0xDEADBEEF1234567890abcdef1234567890abcdef");
     expect(req.maxTimeoutSeconds).toBeGreaterThan(0);
-    expect(req.extra).toEqual({
+    // Scheme-signing fields stay intact; see the dedicated
+    // `extra.crossChain` block below for the informational sibling.
+    expect(req.extra).toMatchObject({
       name: "USDC",
       version: "2",
       assetTransferMethod: "eip3009",
@@ -482,6 +488,81 @@ describe("mapToPaymentRequirements", () => {
     expect(req.extra).toEqual(
       expect.objectContaining({ name: "DAI", version: "1" }),
     );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// extra.crossChain — informational 1CS quote metadata
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("mapToPaymentRequirements — extra.crossChain block", () => {
+  it("sets protocol discriminator to \"1cs\"", () => {
+    const req = mapToPaymentRequirements(mockQuoteResponse(), testConfig());
+    const cross = (req.extra.crossChain as Record<string, unknown>);
+    expect(cross).toBeDefined();
+    expect(cross.protocol).toBe("1cs");
+  });
+
+  it("copies quoteId from QuoteResponse.correlationId (not quote.*)", () => {
+    const quoteResp = mockQuoteResponse();
+    // sanity: the mock fixture uses a known correlationId
+    expect(quoteResp.correlationId).toBe("corr-123");
+
+    const req = mapToPaymentRequirements(quoteResp, testConfig());
+    const cross = req.extra.crossChain as Record<string, unknown>;
+    expect(cross.quoteId).toBe("corr-123");
+  });
+
+  it("populates destination + refund fields from cfg and quote", () => {
+    const cfg = testConfig({
+      merchantRecipient: "merchant.near",
+      merchantAssetOut: "nep141:usdc.near",
+      gatewayRefundAddress: "0x1234567890abcdef1234567890abcdef12345678",
+    });
+    const req = mapToPaymentRequirements(mockQuoteResponse(), cfg);
+    const cross = req.extra.crossChain as Record<string, unknown>;
+
+    // Straight from cfg
+    expect(cross.destinationRecipient).toBe("merchant.near");
+    expect(cross.destinationAsset).toBe("nep141:usdc.near");
+    expect(cross.refundTo).toBe("0x1234567890abcdef1234567890abcdef12345678");
+
+    // Straight from quote (same values as the mock fixture)
+    expect(cross.amountOut).toBe("1000000");
+    expect(cross.amountOutFormatted).toBe("1.00");
+    expect(cross.amountOutUsd).toBe("1.00");
+    expect(cross.amountInUsd).toBe("1.05");
+  });
+
+  it("includes optional refundFee / depositMemo only when the quote provides them", () => {
+    // Quote with neither set
+    const clean = mapToPaymentRequirements(mockQuoteResponse(), testConfig());
+    const cleanCross = clean.extra.crossChain as Record<string, unknown>;
+    expect(cleanCross).not.toHaveProperty("refundFee");
+    expect(cleanCross).not.toHaveProperty("depositMemo");
+
+    // Quote with both set — ensure they round-trip into the block
+    const richQuote = mockQuoteResponse({
+      refundFee: "250",
+      depositMemo: "stellar-memo-abc",
+    });
+    const rich = mapToPaymentRequirements(richQuote, testConfig());
+    const richCross = rich.extra.crossChain as Record<string, unknown>;
+    expect(richCross.refundFee).toBe("250");
+    expect(richCross.depositMemo).toBe("stellar-memo-abc");
+  });
+
+  it("does not mutate or replace the EVM scheme-signing keys (name / version / assetTransferMethod)", () => {
+    // Introducing `crossChain` must NOT affect the sibling signing keys.
+    // This is the EVM-exact-scheme compatibility invariant.
+    const cfg = testConfig({ tokenName: "USD Coin", tokenVersion: "2" });
+    const req = mapToPaymentRequirements(mockQuoteResponse(), cfg);
+
+    expect(req.extra.name).toBe("USD Coin");
+    expect(req.extra.version).toBe("2");
+    expect(req.extra.assetTransferMethod).toBe("eip3009");
+    // And crossChain lives alongside, not in place of, the above.
+    expect(req.extra.crossChain).toBeDefined();
   });
 });
 

@@ -25,6 +25,7 @@ import type {
   SwapState,
   StateStore,
   AssetTransferMethod,
+  CrossChainQuoteExtra,
 } from "./types.js";
 import {
   QuoteUnavailableError,
@@ -325,6 +326,8 @@ export function validateDeadline(quoteResponse: QuoteResponse, cfg: GatewayConfi
  * | extra.name          | cfg.tokenName             | EIP-712 domain name (e.g. "USD Coin")            |
  * | extra.version       | cfg.tokenVersion          | EIP-712 domain version (e.g. "2")                |
  * | extra.assetTransferMethod | cfg.tokenSupportsEip3009 | "eip3009" if supported, else "permit2"    |
+ * | extra.crossChain    | quoteResponse + cfg       | {@link CrossChainQuoteExtra} — informational;    |
+ * |                     |                           | safely ignorable by non-1CS-aware clients        |
  */
 export function mapToPaymentRequirements(
   quoteResponse: QuoteResponse,
@@ -362,8 +365,40 @@ export function mapToPaymentRequirements(
       name: cfg.tokenName,
       version: cfg.tokenVersion,
       assetTransferMethod,
+      crossChain: buildCrossChainExtra(quoteResponse, cfg),
     },
   };
+}
+
+/**
+ * Build the informational `extra.crossChain` block carried on every 402
+ * envelope. Keys that the 1CS quote does not populate (e.g. `refundFee`,
+ * `depositMemo` — both chain-dependent) are omitted from the output
+ * rather than emitted as `undefined`, so serialised JSON stays tight
+ * and downstream consumers can rely on key-presence semantics.
+ *
+ * This helper is a pure field-copy — no I/O, no new failure modes. It
+ * mirrors the TypeScript interface {@link CrossChainQuoteExtra} 1:1.
+ */
+function buildCrossChainExtra(
+  quoteResponse: QuoteResponse,
+  cfg: GatewayConfig,
+): CrossChainQuoteExtra {
+  const quote = quoteResponse.quote;
+  const out: CrossChainQuoteExtra = {
+    protocol: "1cs",
+    quoteId: quoteResponse.correlationId,
+    destinationRecipient: cfg.merchantRecipient,
+    destinationAsset: cfg.merchantAssetOut,
+    amountOut: quote.amountOut,
+    amountOutFormatted: quote.amountOutFormatted,
+    amountOutUsd: quote.amountOutUsd,
+    amountInUsd: quote.amountInUsd,
+    refundTo: cfg.gatewayRefundAddress,
+  };
+  if (quote.refundFee !== undefined) out.refundFee = quote.refundFee;
+  if (quote.depositMemo !== undefined) out.depositMemo = quote.depositMemo;
+  return out;
 }
 
 /**

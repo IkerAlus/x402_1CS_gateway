@@ -1,7 +1,7 @@
 # x402-1CS Gateway — Production Readiness TODO
 
 **Date:** 2026-04-21 (updated for x402scan discovery integration)
-**Based on:** Full codebase audit + 477 passing tests (466 mocked + 11 live) + typecheck clean
+**Based on:** Full codebase audit + 485 passing tests (474 mocked + 11 live) + typecheck clean
 **Target:** Prototype deployment for a small number of users
 
 ---
@@ -20,7 +20,7 @@
 | Manual receipt polling (resilient to ethers `tx.wait()` stalls) | Working |
 | TypeScript compilation | Clean |
 | In-flight settlement recovery on restart | Working |
-| Test suite (477 tests) | 100% pass |
+| Test suite (485 tests) | 100% pass |
 | Error response sanitization (no raw internals leaked to clients) | Working |
 | Address-mistake diagnosis (startup warnings + runtime error context) | Working |
 | x402scan discovery surfaces (`/openapi.json` + `/.well-known/x402` + ownership proofs) | Working (Phases 1-4 of `docs/X402SCAN_PLAN.md`) |
@@ -77,6 +77,7 @@
   - **C3**: Added a "**Status: Shipped — 2026-04-21**" banner at the top of `docs/X402SCAN_PLAN.md` noting that Phases 1-4 + 6-7 are complete and Phase 5 is deliberately deferred.
   - **C4**: Stripped stale references in source comments to non-existent docs — `@see Research plan §N`, `@see Implementation roadmap Step N.N`, `settler-implementation-plan.docx`, "Phase 0", "(Phase 1)" markers, and a handful of `— Phase N` decorations in `X402SCAN_PLAN.md` cross-references that had outlived their usefulness now that the work shipped. Body-comment `D-S1` / `D-M1` etc. labels stay — they still tag real design decisions.
   - `SettlementResult`'s deleted test took the total to **477** (466 mocked + 11 live). No other test counts moved.
+- **Informational `extra.crossChain` block on every 402 envelope** — The 1CS quote response carries useful buyer-facing metadata (quote correlation ID, expected destination amount, USD values on both sides, refund destination, and chain-dependent deposit memo) that the gateway previously dropped after building the 402. The new `CrossChainQuoteExtra` type (in `src/types.ts`) is now populated at `accepts[0].extra.crossChain` on every 402 envelope, sitting **alongside** — never replacing — the EVM `exact` scheme's signing keys (`extra.name` / `extra.version` / `extra.assetTransferMethod`). The v2 `@x402/core` schema explicitly permits arbitrary keys on `extra` (`z.record(z.string(), z.unknown())`), so clients that speak only the `exact` scheme ignore the block and continue to work identically; 1CS-aware clients opt in by checking `extra.crossChain?.protocol === "1cs"`. Deliberately excluded fields: `minAmountIn` (internal threshold), `deadline` (already in `maxTimeoutSeconds`), `timeEstimate` (heuristic), `quoteRequest` (echoes gateway config), and 1CS routing internals. OpenAPI surfaces: new `x-crosschain` top-level extension + `components.schemas.CrossChainQuoteExtra` JSON Schema + 402 response description update — indexers can discover the shape without parsing a live 402. 8 new tests (5 quote-engine + 3 openapi); the two exact-match assertions on `extra` were widened from `toEqual` to `toMatchObject` to tolerate the new sibling key (invariant unchanged). Totals: **485 tests** (474 mocked + 11 live). Client-side consumption code is unchanged (strictly out of scope for this feature; buyer-side integration notes live in `docs/USER_GUIDE.md`).
 
 ---
 

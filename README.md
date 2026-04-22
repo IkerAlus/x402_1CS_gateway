@@ -518,9 +518,45 @@ curl -s http://localhost:3402/.well-known/x402 | jq
 curl -s http://localhost:3402/openapi.json | jq '{openapi, info, paths: (.paths|keys)}'
 ```
 
+### Cross-chain quote metadata (`extra.crossChain`)
+
+Every 402 envelope this gateway emits carries an informational block at `accepts[0].extra.crossChain` describing the underlying 1Click Swap — the 1CS quote correlation ID, expected destination amount, refund destination, USD values, and (when the destination chain needs one) a deposit memo. This is purely informational: the EVM `exact` scheme's signing inputs still live on the sibling keys (`extra.name`, `extra.version`, plus the top-level `asset`/`network`) and are untouched by this block. Clients that only speak the `exact` scheme ignore the whole object.
+
+```json
+{
+  "accepts": [{
+    "scheme": "exact",
+    "network": "eip155:8453",
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "amount": "1050000",
+    "payTo": "0x<1CS-deposit-address>",
+    "maxTimeoutSeconds": 270,
+    "extra": {
+      "name": "USD Coin",
+      "version": "2",
+      "assetTransferMethod": "eip3009",
+      "crossChain": {
+        "protocol": "1cs",
+        "quoteId": "corr-abcdef123",
+        "destinationRecipient": "merchant.near",
+        "destinationAsset": "nep141:usdt.tether-token.near",
+        "amountOut": "1000000",
+        "amountOutFormatted": "1.00",
+        "amountOutUsd": "1.00",
+        "amountInUsd": "1.05",
+        "refundTo": "0x...",
+        "depositMemo": "stellar-memo-abc"
+      }
+    }
+  }]
+}
+```
+
+The JSON schema for `extra.crossChain` is published at `#/components/schemas/CrossChainQuoteExtra` in `/openapi.json`, and a top-level `x-crosschain` extension on the same document advertises the protocol identifier and schema pointer so indexers can discover the surface without parsing a live 402. Buyer-side clients that want to display expected destination amount, fees, refund destination, or a support ID read this block directly — see **[docs/USER_GUIDE.md](./docs/USER_GUIDE.md)** and **[docs/X402SCAN.md](./docs/X402SCAN.md)** for integrator notes.
+
 ## 9. Running the test suite
 
-The project has 466 unit/integration tests plus 11 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
+The project has 474 unit/integration tests plus 11 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
 
 ### npm scripts
 
@@ -540,17 +576,17 @@ npm run format:check  # Prettier check
 npm test
 ```
 
-Runs 466 tests across 19 test files with fully mocked external dependencies (a 20th file, `live-1cs.test.ts`, runs only when `ONE_CLICK_JWT` is set). No API key, funds, or network access required. Covers:
+Runs 474 tests across 19 test files with fully mocked external dependencies (a 20th file, `live-1cs.test.ts`, runs only when `ONE_CLICK_JWT` is set). No API key, funds, or network access required. Covers:
 
 - **State store** (61 tests) — CRUD, TTL, concurrency, phase transitions, listByPhase, `listExpired` phase-filter
 - **Settler** (45 tests) — broadcast, deposit notification, status polling, timeout, **in-flight recovery** (deterministic via `tasks[]`)
-- **Quote engine** (40 tests) — quote building, deadline validation, fee calculation, recipient/asset diagnosis, error-context threading
+- **Quote engine** (45 tests) — quote building, deadline validation, fee calculation, recipient/asset diagnosis, error-context threading, `extra.crossChain` informational block
 - **Verifier** (34 tests) — EIP-3009 and Permit2 signature recovery, balance checks, nonce replay, timing
 - **Chain prefixes** (29 tests) — NEP-141 chain prefix extraction, NEAR account format (implicit + named), OMFT vs NEAR-native, list invariants
 - **Ownership proof** (28 tests) — canonical message, URL normalisation, EIP-191 sign/recover round-trip, startup validation
 - **Config** (27 tests) — Zod validation, defaults, environment loading, CORS allowlist parsing, recipient-format warnings, discovery env vars
 - **Rate limiter** (25 tests) — per-IP quote limiting, settlement concurrency cap, quote GC (never deletes in-flight)
-- **OpenAPI builder** (24 tests) — OpenAPI 3.1 document structure, `x-payment-info`, `x-discovery`, x402 security scheme, per-operation responses
+- **OpenAPI builder** (27 tests) — OpenAPI 3.1 document structure, `x-payment-info`, `x-discovery`, `x-crosschain` + `CrossChainQuoteExtra` schema, x402 security scheme, per-operation responses
 - **Types** (22 tests) — type guards, CAIP-2 parsing, error classes
 - **Protected routes registry** (21 tests) — route shape validation, pricing modes, factory binding, invocability invariants
 - **Middleware** (19 tests) — Express middleware request/response handling, error mapping, error sanitization + correlation IDs, server-side context logging

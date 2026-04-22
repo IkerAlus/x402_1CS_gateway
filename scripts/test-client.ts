@@ -56,6 +56,26 @@ function decodeBase64<T>(encoded: string): T {
   return JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as T;
 }
 
+/**
+ * Shape of the informational 1CS-quote metadata the gateway carries on
+ * `accepts[0].extra.crossChain`. Mirrors `CrossChainQuoteExtra` in
+ * `src/types.ts`. Present on every 402 from this gateway; absent when
+ * probing a non-1CS gateway — hence the whole block is typed optional.
+ */
+interface CrossChainQuoteExtra {
+  protocol: "1cs";
+  quoteId: string;
+  destinationRecipient: string;
+  destinationAsset: string;
+  amountOut: string;
+  amountOutFormatted: string;
+  amountOutUsd: string;
+  amountInUsd: string;
+  refundFee?: string;
+  refundTo: string;
+  depositMemo?: string;
+}
+
 interface PaymentRequired {
   x402Version: number;
   error?: string;
@@ -67,7 +87,14 @@ interface PaymentRequired {
     amount: string;
     payTo: string;
     maxTimeoutSeconds: number;
-    extra: Record<string, unknown>;
+    extra: {
+      name?: string;
+      version?: string;
+      assetTransferMethod?: string;
+      /** Informational — never used for signing. Absent on non-1CS gateways. */
+      crossChain?: CrossChainQuoteExtra;
+      [key: string]: unknown;
+    };
   }>;
 }
 
@@ -139,6 +166,37 @@ async function main(): Promise<void> {
   console.log(
     `    extra.transferMethod: ${accepted.extra.assetTransferMethod}`,
   );
+
+  // Informational 1CS cross-chain metadata (never part of signing — see
+  // docs/USER_GUIDE.md § "Optional: the extra.crossChain informational
+  // block"). Absent when probing a gateway that doesn't emit this block.
+  const cross = accepted.extra.crossChain;
+  if (cross && cross.protocol === "1cs") {
+    console.log("");
+    console.log("  extra.crossChain (1CS quote metadata — informational only):");
+    console.log(`    protocol:             ${cross.protocol}`);
+    console.log(`    quoteId:              ${cross.quoteId}`);
+    console.log(`    destinationRecipient: ${cross.destinationRecipient}`);
+    console.log(`    destinationAsset:     ${cross.destinationAsset}`);
+    console.log(
+      `    amountOut:            ${cross.amountOut} (${cross.amountOutFormatted}) = $${cross.amountOutUsd}`,
+    );
+    console.log(`    amountInUsd:          $${cross.amountInUsd}`);
+    console.log(`    refundTo:             ${cross.refundTo}`);
+    if (cross.refundFee !== undefined) {
+      console.log(`    refundFee:            ${cross.refundFee}`);
+    }
+    if (cross.depositMemo !== undefined) {
+      console.log(`    depositMemo:          ${cross.depositMemo}`);
+    }
+  } else if (accepted.extra.crossChain !== undefined) {
+    // Block present but protocol discriminator doesn't match — either a
+    // different cross-chain protocol in the future or a malformed block.
+    // Surface it rather than silently drop, so the tester notices.
+    console.log(
+      `    extra.crossChain:    (unrecognised protocol, raw: ${JSON.stringify(accepted.extra.crossChain)})`,
+    );
+  }
 
   if (DRY_RUN) {
     console.log("");

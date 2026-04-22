@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from "vitest";
 import { ethers } from "ethers";
-import { buildWellKnownDocument } from "./discovery.js";
+import { buildWellKnownDocument, WELL_KNOWN_INSTRUCTIONS } from "./discovery.js";
 import { signOwnershipProof } from "./ownership-proof.js";
 import type { ProtectedRoute } from "./protected-routes.js";
 import { mockGatewayConfig } from "./mocks/mock-config.js";
@@ -46,9 +46,17 @@ describe("buildWellKnownDocument — shape", () => {
     expect(doc.version).toBe(1);
   });
 
-  it("keys are exactly { version, resources, ownershipProofs }", () => {
+  it("keys are exactly { version, resources, ownershipProofs, instructions }", () => {
+    // Pinned so anyone adding / removing a top-level field has to update
+    // this test deliberately — the x402scan DISCOVERY.md spec does not
+    // recognise arbitrary extensions on this surface.
     const doc = buildWellKnownDocument(mockGatewayConfig(), [route("/a")]);
-    expect(Object.keys(doc).sort()).toEqual(["ownershipProofs", "resources", "version"]);
+    expect(Object.keys(doc).sort()).toEqual([
+      "instructions",
+      "ownershipProofs",
+      "resources",
+      "version",
+    ]);
   });
 
   it("is JSON-serialisable without loss", () => {
@@ -180,5 +188,42 @@ describe("buildWellKnownDocument — empty routes (defensive)", () => {
     // Note: production startup refuses an empty registry; this case
     // exists so the builder itself is still defensible if anyone calls
     // it with an empty list during tests.
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// instructions field (optional-per-spec "legacy guidance")
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("buildWellKnownDocument — instructions", () => {
+  it("is always present and matches the exported WELL_KNOWN_INSTRUCTIONS constant", () => {
+    const doc = buildWellKnownDocument(mockGatewayConfig(), [route("/a")]);
+    expect(typeof doc.instructions).toBe("string");
+    expect(doc.instructions.length).toBeGreaterThan(0);
+    expect(doc.instructions).toBe(WELL_KNOWN_INSTRUCTIONS);
+  });
+
+  it("points crawlers at the richer /openapi.json surface", () => {
+    // The whole point of the field is to nudge crawlers that land on
+    // /.well-known/x402 alone (e.g. via DNS _x402) toward the richer
+    // OpenAPI doc rather than stopping at the minimal fan-out list.
+    const doc = buildWellKnownDocument(mockGatewayConfig(), [route("/a")]);
+    expect(doc.instructions).toContain("/openapi.json");
+    expect(doc.instructions).toContain("PAYMENT-REQUIRED");
+  });
+
+  it("is identical whether publicBaseUrl is set or not", () => {
+    // The string is static (not templated with the base URL) so the
+    // same text ships regardless of deployment — crawlers in either
+    // posture get the same guidance.
+    const withUrl = buildWellKnownDocument(
+      mockGatewayConfig({ publicBaseUrl: "https://gateway.example.com" }),
+      [route("/a")],
+    );
+    const withoutUrl = buildWellKnownDocument(
+      mockGatewayConfig({ publicBaseUrl: undefined }),
+      [route("/a")],
+    );
+    expect(withUrl.instructions).toBe(withoutUrl.instructions);
   });
 });

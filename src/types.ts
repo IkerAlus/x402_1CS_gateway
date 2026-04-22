@@ -237,10 +237,18 @@ export interface PaymentRequirementsRecord {
   payTo: string;
   maxTimeoutSeconds: number;
   /**
-   * Extra fields for the `exact` EVM scheme. Includes:
+   * Fields the gateway carries on every 402 envelope:
+   *
+   * **Required by the EVM `exact` scheme (used for EIP-712 signing):**
    * - `name` — EIP-712 token name
    * - `version` — EIP-712 token version
    * - `assetTransferMethod` — `"eip3009"` | `"permit2"`
+   *
+   * **Optional, gateway-specific informational block:**
+   * - `crossChain?` — {@link CrossChainQuoteExtra} — cross-chain quote
+   *   metadata (quote ID, destination amount, refund info, optional
+   *   deposit memo). Purely informational; never affects signing.
+   *   Clients that only speak the `exact` scheme ignore this key.
    */
   extra: Record<string, unknown>;
 }
@@ -303,6 +311,54 @@ export interface CrossChainSettlementExtra {
   swapStatus: OneClickStatus;
   /** 1CS correlation ID for debugging / explorer lookup. */
   correlationId?: string;
+}
+
+/**
+ * Gateway-specific quote metadata surfaced in
+ * `PaymentRequirements.extra.crossChain` on every 402 envelope.
+ *
+ * This block is **informational** — clients that only speak the EVM
+ * `exact` scheme ignore it and continue to sign using the sibling keys
+ * `extra.name`, `extra.version`, and the top-level `asset` / `network`.
+ * Clients that want to display richer UX (fees, expected destination
+ * amount, refund destination, support IDs) opt in by checking
+ * `extra.crossChain?.protocol === "1cs"` and reading the fields below.
+ *
+ * **Never used for EIP-712 signing or on-chain verification.** The signing
+ * domain comes exclusively from `extra.name`, `extra.version`, `asset`,
+ * and the CAIP-2 network identifier. Changing or omitting fields here
+ * cannot alter the buyer's signed authorization.
+ *
+ * Fields marked optional reflect the 1CS SDK's own optionality — e.g.
+ * not every destination chain requires `depositMemo`. Missing fields
+ * are omitted from the serialised JSON rather than emitted as `null`.
+ */
+export interface CrossChainQuoteExtra {
+  /** Protocol discriminator for cross-chain quote metadata. */
+  protocol: "1cs";
+  /** 1CS quote correlation ID — use when contacting support. */
+  quoteId: string;
+  /** Merchant recipient on the destination chain. */
+  destinationRecipient: string;
+  /** 1CS asset ID the merchant receives. */
+  destinationAsset: string;
+  /** Expected destination amount (smallest unit of the destination asset). */
+  amountOut: string;
+  /** Human-readable destination amount (e.g. `"10.00"`). */
+  amountOutFormatted: string;
+  /** USD value of the destination amount, for buyer-facing disclosure. */
+  amountOutUsd: string;
+  /** USD value of what the buyer is authorising on the origin chain. */
+  amountInUsd: string;
+  /** Fee charged if the deposit is refunded. Optional (chain-dependent). */
+  refundFee?: string;
+  /** Address that receives refunds from failed swaps. */
+  refundTo: string;
+  /**
+   * Memo required by certain destination chains (Stellar, XRP,
+   * Cosmos-family). Omitted when the chain does not require one.
+   */
+  depositMemo?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════

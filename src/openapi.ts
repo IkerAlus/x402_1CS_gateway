@@ -8,13 +8,16 @@
  *  - `info.title` / `info.version`                          (stock OpenAPI)
  *  - `servers[0].url`         — the public base URL
  *  - `x-discovery.ownershipProofs`                          (x402scan ext.)
+ *  - `x-crosschain`           — protocol + schema pointer   (gateway ext.)
  *  - `components.securitySchemes.x402`                      (stock OpenAPI)
+ *  - `components.schemas.CrossChainQuoteExtra`              (informational shape)
  *  - Per operation:
  *      - `security: [{ x402: [] }]`                         (stock OpenAPI)
  *      - `x-payment-info: { protocols: "x402", ...pricing }` (x402scan ext.)
  *      - `requestBody` driven by `route.inputSchema`
  *      - `responses.200` driven by `route.outputSchema`
- *      - `responses.402` documenting the PAYMENT-REQUIRED header
+ *      - `responses.402` documenting the PAYMENT-REQUIRED header (and its
+ *        decoded `accepts[0].extra.crossChain` informational block)
  *
  * This module is a **pure builder** — no Express handler, no I/O. The
  * `server.ts` entry point calls `buildOpenApiDocument` at startup and
@@ -57,6 +60,87 @@ export interface OpenApiInfo {
  * would fight the x402 extensions.
  */
 export type OpenApiDocument = Record<string, unknown>;
+
+/**
+ * JSON Schema for the `accepts[0].extra.crossChain` informational block
+ * carried on every 402 envelope. Advertised in the OpenAPI document at
+ * `components.schemas.CrossChainQuoteExtra` so indexers (x402scan,
+ * generic OpenAPI tooling) and integrators can discover the shape
+ * without parsing a live 402 response.
+ *
+ * Mirrors {@link import("./types.js").CrossChainQuoteExtra} 1:1. Kept as
+ * a module-level constant so a future shape change is one edit here +
+ * one in `types.ts` + one in `quote-engine.ts`.
+ */
+export const CROSS_CHAIN_QUOTE_SCHEMA: Readonly<Record<string, unknown>> =
+  Object.freeze({
+    type: "object",
+    description:
+      "Informational 1CS quote metadata carried on `accepts[0].extra.crossChain`. " +
+      "Never used for signing. Clients opt in by checking `protocol === \"1cs\"`; " +
+      "clients that don't care ignore the whole object.",
+    required: [
+      "protocol",
+      "quoteId",
+      "destinationRecipient",
+      "destinationAsset",
+      "amountOut",
+      "amountOutFormatted",
+      "amountOutUsd",
+      "amountInUsd",
+      "refundTo",
+    ],
+    properties: {
+      protocol: {
+        type: "string",
+        enum: ["1cs"],
+        description: "Cross-chain protocol discriminator.",
+      },
+      quoteId: {
+        type: "string",
+        description: "1CS quote correlation ID — use when contacting support.",
+      },
+      destinationRecipient: {
+        type: "string",
+        description: "Merchant recipient on the destination chain.",
+      },
+      destinationAsset: {
+        type: "string",
+        description: "1CS asset ID the merchant receives.",
+      },
+      amountOut: {
+        type: "string",
+        description: "Expected destination amount (smallest unit).",
+      },
+      amountOutFormatted: {
+        type: "string",
+        description: "Human-readable destination amount (e.g. \"10.00\").",
+      },
+      amountOutUsd: {
+        type: "string",
+        description: "USD value of the destination amount.",
+      },
+      amountInUsd: {
+        type: "string",
+        description: "USD value of the buyer's origin-chain authorisation.",
+      },
+      refundFee: {
+        type: "string",
+        description:
+          "Fee charged if the deposit is refunded. Optional (chain-dependent).",
+      },
+      refundTo: {
+        type: "string",
+        description: "Address that receives refunds from failed swaps.",
+      },
+      depositMemo: {
+        type: "string",
+        description:
+          "Memo required by certain destination chains (Stellar, XRP, " +
+          "Cosmos-family). Omitted when the chain does not require one.",
+      },
+    },
+  });
 
 // ═══════════════════════════════════════════════════════════════════════
 // Builder
@@ -112,6 +196,20 @@ export function buildOpenApiDocument(
     "x-discovery": {
       ownershipProofs: validProofs,
     },
+    "x-crosschain": {
+      protocol: "1cs",
+      schema: "#/components/schemas/CrossChainQuoteExtra",
+      description:
+        "Every 402 envelope carries an informational `accepts[0].extra.crossChain` " +
+        "block (quote ID, destination amount, refund details, optional deposit memo). " +
+        "Full shape in `schema` above; clients that only speak the EVM `exact` " +
+        "scheme can ignore it entirely.",
+    },
+    // `paths` before `components` follows the OpenAPI 3.x spec's own
+    // example ordering (openapi → info → servers → paths → components)
+    // and keeps the human-readable route list near the top of the JSON,
+    // above the bulky supporting-schema block.
+    paths: buildPaths(routes),
     components: {
       securitySchemes: {
         x402: {
@@ -121,8 +219,10 @@ export function buildOpenApiDocument(
             "Pay-per-request authentication via the x402 protocol. Clients receive a 402 with a PAYMENT-REQUIRED envelope, sign an EIP-712 authorization, and retry with PAYMENT-SIGNATURE.",
         },
       },
+      schemas: {
+        CrossChainQuoteExtra: CROSS_CHAIN_QUOTE_SCHEMA,
+      },
     },
-    paths: buildPaths(routes),
   };
 
   return doc;
@@ -241,13 +341,14 @@ function buildResponses(route: ProtectedRoute): Record<string, unknown> {
     },
     "402": {
       description:
-        "Payment required. The response carries a PAYMENT-REQUIRED header " +
-        "with a base64-encoded x402 envelope (v2). Clients sign an EIP-712 " +
-        "authorization and retry the request with a PAYMENT-SIGNATURE header.",
+        "Payment required. The `PAYMENT-REQUIRED` header carries a base64-encoded " +
+        "x402 v2 envelope; clients sign an EIP-712 authorization and retry with " +
+        "`PAYMENT-SIGNATURE`. Decoded, `accepts[0].extra.crossChain` conforms to " +
+        "CrossChainQuoteExtra — informational metadata about the 1Click Swap; " +
+        "safe to ignore if unused.",
       headers: {
         "PAYMENT-REQUIRED": {
-          description:
-            "Base64-encoded x402 PaymentRequired envelope listing the accepted payment options.",
+          description: "Base64-encoded x402 PaymentRequired envelope (v2).",
           schema: { type: "string" },
         },
       },

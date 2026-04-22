@@ -103,6 +103,28 @@ describe("buildOpenApiDocument — top-level shape", () => {
     expect(roundtripped).toEqual(doc);
   });
 
+  it("emits top-level keys in the OpenAPI-canonical reading order (paths before components)", () => {
+    // Insertion order is preserved by JS objects + JSON.stringify, so the
+    // wire output respects this order. Keeps `info` near the top and the
+    // bulky `components` / `schemas` blob at the bottom — matches the
+    // spec's own example files and avoids a ~80-line schema dominating
+    // the first screenful of the pretty-printed JSON.
+    const doc = buildOpenApiDocument(
+      info(),
+      mockGatewayConfig({ publicBaseUrl: "https://gateway.example.com" }),
+      [route()],
+    );
+    expect(Object.keys(doc)).toEqual([
+      "openapi",
+      "info",
+      "servers",
+      "x-discovery",
+      "x-crosschain",
+      "paths",
+      "components",
+    ]);
+  });
+
   it("is deterministic given identical inputs", () => {
     const cfg = mockGatewayConfig();
     const d1 = buildOpenApiDocument(info(), cfg, [route()]);
@@ -367,5 +389,75 @@ describe("buildOpenApiDocument — x402scan required fields", () => {
     expect(op.security).toEqual([{ x402: [] }]);
     expect(op["x-payment-info"]).toBeDefined();
     expect((op.responses as Record<string, unknown>)["402"]).toBeDefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// x-crosschain + components.schemas.CrossChainQuoteExtra
+//
+// The gateway carries informational 1CS metadata on every 402 envelope
+// under `accepts[0].extra.crossChain`. The OpenAPI document advertises
+// the shape so indexers / integrators can discover it without parsing a
+// live 402.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("buildOpenApiDocument — x-crosschain + CrossChainQuoteExtra schema", () => {
+  it("emits top-level `x-crosschain` pointing at the schema", () => {
+    const doc = buildOpenApiDocument(info(), mockGatewayConfig(), [route()]);
+    const xcc = doc["x-crosschain"] as Record<string, unknown>;
+    expect(xcc).toBeDefined();
+    expect(xcc.protocol).toBe("1cs");
+    expect(xcc.schema).toBe("#/components/schemas/CrossChainQuoteExtra");
+  });
+
+  it("publishes the CrossChainQuoteExtra JSON schema under components.schemas", () => {
+    const doc = buildOpenApiDocument(info(), mockGatewayConfig(), [route()]);
+    const schemas = (doc.components as { schemas?: Record<string, unknown> }).schemas;
+    expect(schemas).toBeDefined();
+    const schema = schemas!.CrossChainQuoteExtra as Record<string, unknown>;
+    expect(schema).toBeDefined();
+    expect(schema.type).toBe("object");
+
+    // Required fields listed
+    const required = schema.required as string[];
+    expect(required).toEqual(
+      expect.arrayContaining([
+        "protocol",
+        "quoteId",
+        "destinationRecipient",
+        "destinationAsset",
+        "amountOut",
+        "amountOutFormatted",
+        "amountOutUsd",
+        "amountInUsd",
+        "refundTo",
+      ]),
+    );
+
+    // Optional fields declared as properties but not in `required`
+    const props = schema.properties as Record<string, unknown>;
+    expect(props).toHaveProperty("refundFee");
+    expect(props).toHaveProperty("depositMemo");
+    expect(required).not.toContain("refundFee");
+    expect(required).not.toContain("depositMemo");
+
+    // protocol is pinned to the single literal "1cs"
+    expect((props.protocol as { enum: string[] }).enum).toEqual(["1cs"]);
+  });
+
+  it("per-operation 402 response description mentions extra.crossChain + the schema ref", () => {
+    const doc = buildOpenApiDocument(info(), mockGatewayConfig(), [
+      route({ path: "/api/a" }),
+      route({ path: "/api/b", method: "POST" }),
+    ]);
+    const paths = doc.paths as Record<string, Record<string, Record<string, unknown>>>;
+
+    for (const [path, method] of [["/api/a", "get"], ["/api/b", "post"]] as const) {
+      const op = paths[path]![method]!;
+      const r402 = (op.responses as Record<string, unknown>)["402"] as Record<string, unknown>;
+      const desc = r402.description as string;
+      expect(desc).toContain("extra.crossChain");
+      expect(desc).toContain("CrossChainQuoteExtra");
+    }
   });
 });

@@ -7,13 +7,14 @@
  * consume it, so we keep it in sync with the OpenAPI doc even when the
  * latter is the primary surface.
  *
- * Shape (per x402scan DISCOVERY.md):
+ * Shape (per x402scan DISCOVERY.md § B — "Fan-Out (Compatibility)"):
  *
  * ```json
  * {
  *   "version": 1,
  *   "resources": ["https://gateway.example.com/api/premium"],
- *   "ownershipProofs": ["0x..."]
+ *   "ownershipProofs": ["0x..."],
+ *   "instructions": "Prefer /openapi.json for per-route schemas; probe each URL in `resources` for its runtime 402 PAYMENT-REQUIRED envelope."
  * }
  * ```
  *
@@ -55,7 +56,29 @@ export interface WellKnownDocument {
    * malformed entries are logged as warnings at startup and dropped here.
    */
   ownershipProofs: string[];
+  /**
+   * Free-form "legacy guidance" field (per the spec). We always emit it
+   * to point crawlers that land on `/.well-known/x402` alone — without
+   * also fetching `/openapi.json` — at the richer surface, and to
+   * remind them that authoritative signing details live on each listed
+   * resource's runtime 402 response rather than in this document.
+   */
+  instructions: string;
 }
+
+/**
+ * Static "legacy guidance" string emitted on every well-known response.
+ * Kept as a module-level constant so tests can pin behaviour and future
+ * edits happen in one place.
+ *
+ * Deliberately short — the spec describes the field as optional legacy
+ * guidance, not a free-form description surface.
+ */
+export const WELL_KNOWN_INSTRUCTIONS =
+  "Prefer /openapi.json for per-route schemas (x-payment-info, " +
+  "x-crosschain, response shapes). Each URL in `resources` returns a " +
+  "runtime 402 PAYMENT-REQUIRED envelope — probe those for the live " +
+  "payment options and signing details.";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Builder
@@ -97,6 +120,7 @@ export function buildWellKnownDocument(
     version: 1,
     resources,
     ownershipProofs: validProofs,
+    instructions: WELL_KNOWN_INSTRUCTIONS,
   };
 }
 

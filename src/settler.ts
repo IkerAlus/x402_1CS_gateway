@@ -1,25 +1,25 @@
 /**
  * Settler — broadcasts the on-chain transfer and shepherds the 1CS swap to completion.
  *
- * This module handles Step 1.4 of the implementation roadmap. After the verifier
- * confirms the buyer's payment signature (phase = VERIFIED), the settler:
+ * After the verifier confirms the buyer's payment signature (phase =
+ * VERIFIED), the settler:
  *
  * 1. **Broadcasts** the buyer's signed authorization on-chain (EIP-3009 or Permit2)
  * 2. **Notifies** the 1CS API of the deposit transaction (`POST /v0/deposit/submit`)
  * 3. **Polls** the 1CS status endpoint until a terminal status is reached
  * 4. **Builds** the x402 `SettleResponse` (PAYMENT-RESPONSE header) from the result
  *
- * Design decisions (from settler-implementation-plan.docx, all "recommended"):
- * - D-S1: Dynamic gas estimation via `estimateGas()` + 20% buffer
- * - D-S2: 1 block confirmation for v1 (targeting L2s like Base)
- * - D-S3: Pre-check nonce via `authorizationState` before broadcasting
- * - D-S4: FAILED/REFUNDED → SwapFailedError(502), manual refund in Phase 3
- * - D-S5: Injectable deps (BroadcastFn, DepositNotifyFn, StatusPollFn)
- * - D-S6: Happy-path only for v1; state store sufficient for Phase 3 recovery
+ * Internal design decisions cross-referenced in body comments:
+ * - **D-S1**: Dynamic gas estimation via `estimateGas()` + 20% buffer
+ * - **D-S2**: 1 block confirmation (targeting L2s like Base)
+ * - **D-S3**: Pre-check nonce via `authorizationState` before broadcasting
+ * - **D-S4**: FAILED/REFUNDED → `SwapFailedError(502)`; automatic refund is
+ *   tracked as a production-hardening item in `docs/TODO.md`
+ * - **D-S5**: Injectable deps (BroadcastFn, DepositNotifyFn, StatusPollFn)
+ * - **D-S6**: Happy-path broadcast; state-store persistence drives the
+ *   `recoverInFlightSettlements` restart flow
  *
  * @module settler
- * @see Research plan §5 — Settler module
- * @see Implementation roadmap Step 1.4
  */
 
 import { ethers } from "ethers";
@@ -43,6 +43,8 @@ import {
   InsufficientGasError,
   GatewayError,
 } from "./types.js";
+import { extractSignatureFromAuth } from "./verifier.js";
+import { NEP141_CHAIN_MAP } from "./chain-prefixes.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Per-call timeout utility
@@ -871,8 +873,6 @@ async function waitForReceipt(
  */
 export function createBroadcastFn(
   wallet: ethers.Wallet,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _confirmations: number = 1,
 ): BroadcastFn {
   return {
     async broadcastEIP3009(
@@ -1100,56 +1100,11 @@ async function failSwap(
   }
 }
 
-/**
- * Maps NEP-141 OMFT chain prefixes to canonical chain identifiers.
- *
- * Format: `nep141:<chain>-<tokenAddress>.omft.near`
- * Example: `nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near`
- *
- * Uses CAIP-2 format (`eip155:<chainId>`) for EVM chains and descriptive
- * identifiers (`<chain>:mainnet`) for non-EVM chains.
- *
- * This map covers all chains currently supported by the 1CS API.
- * Unknown prefixes fall through to the raw prefix string (not `"near"`),
- * so new chains added by 1CS work without code changes — they just
- * report the raw prefix as the destination chain identifier.
- *
- * @see https://docs.near-intents.org/resources/asset-support
- */
-const NEP141_CHAIN_PREFIX_MAP: Record<string, string> = {
-  // EVM chains
-  eth: "eip155:1",
-  base: "eip155:8453",
-  arb: "eip155:42161",
-  op: "eip155:10",
-  polygon: "eip155:137",
-  avax: "eip155:43114",
-  bsc: "eip155:56",
-  turbochain: "eip155:7897",
-  gnosis: "eip155:100",
-  scroll: "eip155:534352",
-  xlayer: "eip155:196",
-  berachain: "eip155:80094",
-  monad: "eip155:143",
-  plasma: "eip155:27",
-  // Non-EVM chains
-  solana: "solana:mainnet",
-  bitcoin: "bitcoin:mainnet",
-  litecoin: "litecoin:mainnet",
-  dogecoin: "dogecoin:mainnet",
-  stellar: "stellar:pubnet",
-  xrp: "xrp:mainnet",
-  ton: "ton:mainnet",
-  tron: "tron:mainnet",
-  aptos: "aptos:mainnet",
-  sui: "sui:mainnet",
-  starknet: "starknet:mainnet",
-  aleo: "aleo:mainnet",
-  cardano: "cardano:mainnet",
-  dash: "dash:mainnet",
-  zcash: "zcash:mainnet",
-  bch: "bch:mainnet",
-};
+// The OMFT chain-prefix → canonical chain identifier map is the single
+// source of truth in `src/chain-prefixes.ts` (`NEP141_CHAIN_MAP`). The
+// `EVM_CHAIN_PREFIXES` / `NON_EVM_CHAIN_PREFIXES` lists used by config
+// validation and quote-engine diagnosis are derived from the same map,
+// so adding a new chain is one edit in one place.
 
 /**
  * Extract the destination chain from a 1CS asset ID.
@@ -1194,7 +1149,7 @@ export function extractDestinationChain(assetId: string): string {
     const hyphenIndex = rest.indexOf("-");
     if (hyphenIndex > 0) {
       const chainPrefix = rest.substring(0, hyphenIndex);
-      const mapped = NEP141_CHAIN_PREFIX_MAP[chainPrefix];
+      const mapped = NEP141_CHAIN_MAP[chainPrefix];
       if (mapped) return mapped;
       // Unknown but clearly prefixed — return raw prefix so new 1CS chains
       // work without code changes (just with less-pretty chain identifiers).
@@ -1210,19 +1165,9 @@ export function extractDestinationChain(assetId: string): string {
   return prefix;
 }
 
-/**
- * Try to extract a signature from an EIP-3009 authorization when the
- * top-level `signature` field is not present.
- */
-function extractSignatureFromAuth(
-  auth: ExactEIP3009Payload["authorization"],
-): string | undefined {
-  const authAny = auth as Record<string, unknown>;
-  if (typeof authAny.signature === "string" && authAny.signature.startsWith("0x")) {
-    return authAny.signature;
-  }
-  return undefined;
-}
+// `extractSignatureFromAuth` is a shared helper — see `verifier.ts` for
+// the single source of truth. The import appears at the top of this file
+// alongside other verifier imports.
 
 /**
  * Promise-based sleep for polling intervals.
@@ -1230,6 +1175,3 @@ function extractSignatureFromAuth(
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-// Expose sleep for test injection
-export { sleep as _sleep };

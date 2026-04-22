@@ -15,16 +15,15 @@
  *
  *  1. `src/server.ts` — mounts each route through `createX402Middleware`
  *     and the entry's handler.
- *  2. `src/openapi.ts` (Phase 4) — renders each entry as a path item in
- *     the OpenAPI 3.x document served at `/openapi.json`.
- *  3. `src/discovery.ts` (Phase 3) — emits each `path` as an absolute URL
- *     in the `/.well-known/x402` fan-out document.
+ *  2. `src/openapi.ts` — renders each entry as a path item in the
+ *     OpenAPI 3.x document served at `/openapi.json`.
+ *  3. `src/discovery.ts` — emits each `path` as an absolute URL in the
+ *     `/.well-known/x402` fan-out document.
  *
  * Adding a new paid endpoint is one `PROTECTED_ROUTES` entry — the three
  * discovery surfaces pick it up automatically.
  *
  * @module protected-routes
- * @see docs/X402SCAN_PLAN.md — Phase 1 design notes
  */
 
 import type { RequestHandler } from "express";
@@ -211,10 +210,10 @@ const PREMIUM_OUTPUT_SCHEMA: Record<string, unknown> = {
 };
 
 /**
- * The live registry. Phase 1 seed is the single demo resource; future
- * routes are added here. Handlers stay in this file so each entry is a
- * single cohesive unit — the handler's shape obviously matches the
- * `outputSchema` next to it.
+ * The live registry. Currently seeded with the single demo resource;
+ * future paid routes are appended here. Handlers stay in this file so
+ * each entry is a single cohesive unit — the handler's shape obviously
+ * matches the `outputSchema` next to it.
  */
 export const PROTECTED_ROUTES: readonly ProtectedRoute[] = [
   {
@@ -239,9 +238,9 @@ export const PROTECTED_ROUTES: readonly ProtectedRoute[] = [
       additionalProperties: false,
     },
     outputSchema: PREMIUM_OUTPUT_SCHEMA,
-    // Handler is attached in server.ts where it has access to `cfg`.
-    // Phase 1 keeps the existing shape; see `buildPremiumHandler` below
-    // for the factory used at startup.
+    // Handler is attached at startup (see `buildPremiumHandler` below)
+    // where it has access to `cfg`. The placeholder here throws loudly
+    // if anyone mounts the raw registry entry by mistake.
     handler: (_req, _res, next) => next(new Error(
       "handler not bound — the registry entry must be cloned with a real handler at startup; " +
       "see `buildPremiumHandler` in src/protected-routes.ts",

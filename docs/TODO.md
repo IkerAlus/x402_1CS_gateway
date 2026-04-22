@@ -1,7 +1,7 @@
 # x402-1CS Gateway — Production Readiness TODO
 
 **Date:** 2026-04-21 (updated for x402scan discovery integration)
-**Based on:** Full codebase audit + 478 passing tests (467 mocked + 11 live) + typecheck clean
+**Based on:** Full codebase audit + 477 passing tests (466 mocked + 11 live) + typecheck clean
 **Target:** Prototype deployment for a small number of users
 
 ---
@@ -20,7 +20,7 @@
 | Manual receipt polling (resilient to ethers `tx.wait()` stalls) | Working |
 | TypeScript compilation | Clean |
 | In-flight settlement recovery on restart | Working |
-| Test suite (478 tests) | 100% pass |
+| Test suite (477 tests) | 100% pass |
 | Error response sanitization (no raw internals leaked to clients) | Working |
 | Address-mistake diagnosis (startup warnings + runtime error context) | Working |
 | x402scan discovery surfaces (`/openapi.json` + `/.well-known/x402` + ownership proofs) | Working (Phases 1-4 of `docs/X402SCAN_PLAN.md`) |
@@ -64,6 +64,19 @@
   - **Live suite trimmed 17 → 11 tests** — removed live tests that duplicated mocked coverage or tested 1CS-side invariants rather than gateway behaviour: quote-pricing-sanity, deposit-address uniqueness, small/large amount variants, state-store persistence, concurrent quotes. Live CI time: **71 s → 48 s (-32%)**. Retained: authentication, dry-quote shape, real quote with deposit address, invalid-asset / expired-deadline rejection, full 402→sign→settle flow, `X402Client.payAndFetch`, 1CS 401/400 error mapping, status endpoint.
   - **Explicit non-goal** — settler-internal helpers (`withTimeout` timeout branch, `waitForReceipt` max-attempts branch) remained untested. Reaching them would require either exporting file-private helpers or ~50 lines of mock-provider scaffolding for ~3 lines of guard logic; net test theatre.
   - Totals after E: **478 tests** (467 mocked + 11 live) across **19 mocked test files** + live-1cs.test.ts. Total CI time **~51 s**, down from ~73 s.
+- **Codebase health — Tranches A + B + C** — Three follow-on tranches after Tranche E addressed correctness bugs, dead code, and doc drift surfaced by a parallel read-only audit. No public API or runtime behaviour changed; all exports, endpoints, and the 11-test live suite still pass identically.
+  - **A1**: `src/index.ts` was a published-library barrel with an auto-executed `main()` call that crashed external importers when env vars were missing. Removed `main()` and its `loadConfigFromEnv` import; every named export preserved 1:1. The file is now a pure re-export surface.
+  - **A2**: Removed the `"start": "node dist/index.ts"` npm script (impossible to execute — node can't run `.ts`, and the compiled output lives at `dist/index.js`). Never worked, so no behaviour lost.
+  - **A3**: Deleted the stale `dist/` directory (March-31 artefacts with only 4 of the current 23 source files). Added a `"clean": "rm -rf dist"` npm script for future rebuilds. `dist/` remains gitignored.
+  - **B1b**: Deduped `extractSignatureFromAuth` — the byte-identical copy in `settler.ts` now imports from `verifier.ts` (which exports it as an internal helper, not exposed via `src/index.ts`). Settler's consumer code accepts the stricter `\`0x${string}\`` return type verbatim.
+  - **B1c**: Chain-prefix lists now derive from a single source. Added `NEP141_CHAIN_MAP` in `src/chain-prefixes.ts` (30 chain-prefix → CAIP-2 entries). `EVM_CHAIN_PREFIXES` and `NON_EVM_CHAIN_PREFIXES` are computed from the map by partitioning on the `eip155:` value prefix; `settler.ts` imports `NEP141_CHAIN_MAP` and dropped its 34-line duplicate. Three sources of truth → one.
+  - **B1a (skipped with rationale)**: `extractChainId` is duplicated between `verifier.ts` and `client/signer.ts`. Deduping would either require the buyer-side client to reach across into server-side `src/chain-prefixes.ts` or create a new shared leaf for a 4-line helper. Neither wins; the two copies are byte-identical today and drift risk is modest.
+  - **B2**: Deleted four confirmed-dead items — the `export { sleep as _sleep }` re-export in `settler.ts` (zero consumers), the `SettlementResult` type in `types.ts` and its orphan test (the settler returns `SettlementResponseRecord` directly; nothing in production ever consumed `SettlementResult`), and the `_confirmations` parameter on `createBroadcastFn` (no caller passed a 2nd arg). Kept `_resourceUrl` on `buildPaymentRequirements` — removing it would ripple through 5+ call-sites in the public API.
+  - **B3**: Deleted five unused mock helpers from `src/mocks/` — `failingChainReader`, `zeroBalanceChainReader`, `zeroAllowanceChainReader` (`mock-chain-reader.ts`) and `mockTerminalStatus` (`mock-1cs-responses.ts`). No test imported any of them; each was a one-line wrapper around `mockChainReader({...})` that tests can spell inline.
+  - **C2**: DEPLOYMENT_GUIDE's stale "Project structure" tree (which listed pre-x402scan files) now points at `README.md`'s canonical tree. CLAUDE.local.md's file map stayed — it's a qualitatively richer 3-column table (purpose + key exports per file) designed for AI-agent onboarding.
+  - **C3**: Added a "**Status: Shipped — 2026-04-21**" banner at the top of `docs/X402SCAN_PLAN.md` noting that Phases 1-4 + 6-7 are complete and Phase 5 is deliberately deferred.
+  - **C4**: Stripped stale references in source comments to non-existent docs — `@see Research plan §N`, `@see Implementation roadmap Step N.N`, `settler-implementation-plan.docx`, "Phase 0", "(Phase 1)" markers, and a handful of `— Phase N` decorations in `X402SCAN_PLAN.md` cross-references that had outlived their usefulness now that the work shipped. Body-comment `D-S1` / `D-M1` etc. labels stay — they still tag real design decisions.
+  - `SettlementResult`'s deleted test took the total to **477** (466 mocked + 11 live). No other test counts moved.
 
 ---
 

@@ -85,25 +85,11 @@ export function mockChainReader(
   };
 }
 
-/**
- * Create a chain reader that always fails — for testing non-fatal fallback behavior.
- */
-export function failingChainReader(error?: Error): ChainReader {
-  return mockChainReader({
-    readContractError: error ?? new Error("RPC provider unreachable"),
-  });
-}
-
-/**
- * Create a chain reader with zero balance — for testing insufficient balance errors.
- */
-export function zeroBalanceChainReader(): ChainReader {
-  return mockChainReader({ tokenBalance: 0n });
-}
-
-/**
- * Create a chain reader with zero Permit2 allowance — for testing allowance errors.
- */
-export function zeroAllowanceChainReader(): ChainReader {
-  return mockChainReader({ permit2Allowance: 0n });
-}
+// Convenience wrappers (failingChainReader / zeroBalanceChainReader /
+// zeroAllowanceChainReader) used to live here. They were one-liners
+// around `mockChainReader({...})` and never imported by any test, so
+// they were removed to keep the mock surface honest. Tests that want
+// those scenarios can construct them inline — e.g.
+//   mockChainReader({ readContractError: new Error("RPC unreachable") })
+//   mockChainReader({ tokenBalance: 0n })
+//   mockChainReader({ permit2Allowance: 0n })

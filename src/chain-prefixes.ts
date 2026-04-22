@@ -1,33 +1,85 @@
 /**
  * Shared NEP-141 chain-prefix constants and helpers.
  *
- * These are used by both `config.ts` (startup recipient-format validation)
- * and `quote-engine.ts` (runtime diagnosis of 1CS rejections). Living in
- * their own leaf module keeps both call-sites in sync and avoids a cycle
- * between config and the engine.
+ * Used by `config.ts` (startup recipient-format validation), `quote-engine.ts`
+ * (runtime diagnosis of 1CS rejections) and `settler.ts` (mapping an OMFT
+ * deposit back to its destination chain). Living in their own leaf module
+ * keeps every call-site in sync and avoids import cycles.
  *
  * @see https://docs.near-intents.org/resources/asset-support
  */
 
 /**
- * Known NEP-141 chain prefixes that map to EVM chains.
- * When the destination asset uses one of these, the recipient should be a
- * 0x-prefixed EVM address (40 hex chars).
+ * Single source of truth for known NEP-141 OMFT bridge prefixes and the
+ * canonical chain identifier they map to.
+ *
+ * EVM chains map to CAIP-2 `eip155:<chainId>`; non-EVM chains map to a
+ * descriptive `<chain>:<network>` identifier used by the settler when
+ * building the `destinationChain` field of the x402 settlement extras.
+ *
+ * Adding a new chain? Just add one entry here — the derived arrays below
+ * and every consumer (`config`, `quote-engine`, `settler`) pick it up
+ * automatically.
  */
-export const EVM_CHAIN_PREFIXES: readonly string[] = [
-  "eth", "base", "arb", "op", "polygon", "avax", "bsc", "turbochain",
-  "gnosis", "scroll", "xlayer", "berachain", "monad", "plasma",
-];
+export const NEP141_CHAIN_MAP: Readonly<Record<string, string>> = Object.freeze({
+  // EVM chains (values must begin with "eip155:" for the partition below to pick them up)
+  eth: "eip155:1",
+  base: "eip155:8453",
+  arb: "eip155:42161",
+  op: "eip155:10",
+  polygon: "eip155:137",
+  avax: "eip155:43114",
+  bsc: "eip155:56",
+  turbochain: "eip155:7897",
+  gnosis: "eip155:100",
+  scroll: "eip155:534352",
+  xlayer: "eip155:196",
+  berachain: "eip155:80094",
+  monad: "eip155:143",
+  plasma: "eip155:27",
+  // Non-EVM chains
+  solana: "solana:mainnet",
+  bitcoin: "bitcoin:mainnet",
+  litecoin: "litecoin:mainnet",
+  dogecoin: "dogecoin:mainnet",
+  stellar: "stellar:pubnet",
+  xrp: "xrp:mainnet",
+  ton: "ton:mainnet",
+  tron: "tron:mainnet",
+  aptos: "aptos:mainnet",
+  sui: "sui:mainnet",
+  starknet: "starknet:mainnet",
+  aleo: "aleo:mainnet",
+  cardano: "cardano:mainnet",
+  dash: "dash:mainnet",
+  zcash: "zcash:mainnet",
+  bch: "bch:mainnet",
+});
 
 /**
- * Known NEP-141 chain prefixes for non-EVM chains.
+ * Known NEP-141 chain prefixes that map to EVM chains. Derived from
+ * {@link NEP141_CHAIN_MAP} — do not edit directly.
+ *
+ * When the destination asset uses one of these, the recipient should be
+ * a 0x-prefixed EVM address (40 hex chars).
+ */
+export const EVM_CHAIN_PREFIXES: readonly string[] = Object.freeze(
+  Object.entries(NEP141_CHAIN_MAP)
+    .filter(([, caip]) => caip.startsWith("eip155:"))
+    .map(([prefix]) => prefix),
+);
+
+/**
+ * Known NEP-141 chain prefixes for non-EVM chains. Derived from
+ * {@link NEP141_CHAIN_MAP} — do not edit directly.
+ *
  * Recipient format varies per chain (Stellar G…, Solana pubkey, etc.).
  */
-export const NON_EVM_CHAIN_PREFIXES: readonly string[] = [
-  "solana", "bitcoin", "litecoin", "dogecoin", "stellar", "xrp",
-  "ton", "tron", "aptos", "sui", "starknet", "aleo", "cardano",
-  "dash", "zcash", "bch",
-];
+export const NON_EVM_CHAIN_PREFIXES: readonly string[] = Object.freeze(
+  Object.entries(NEP141_CHAIN_MAP)
+    .filter(([, caip]) => !caip.startsWith("eip155:"))
+    .map(([prefix]) => prefix),
+);
 
 /**
  * Extract the OMFT bridge chain prefix from a NEP-141 asset ID.

@@ -5,10 +5,7 @@
  * SDK methods: getQuote(), submitDepositTx(), getExecutionStatus().
  */
 
-import type {
-  QuoteResponseRecord,
-  OneClickStatus,
-} from "../types.js";
+import type { QuoteResponseRecord } from "../types.js";
 import type { StatusPollResult, DepositNotifyResult } from "../settler.js";
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -185,26 +182,8 @@ export function mockRefundedStatusSequence(): StatusPollResult[] {
   ];
 }
 
-/**
- * Build a single terminal status result.
- */
-export function mockTerminalStatus(
-  status: OneClickStatus,
-  overrides: Partial<StatusPollResult> = {},
-): StatusPollResult {
-  return {
-    status,
-    swapDetails: status === "SUCCESS"
-      ? {
-          originChainTxHashes: [{ hash: "0xabc", explorerUrl: "https://basescan.org/tx/0xabc" }],
-          destinationChainTxHashes: [{ hash: "near-tx", explorerUrl: "https://nearblocks.io/txns/near-tx" }],
-          amountIn: "10500000",
-          amountOut: "10000000",
-        }
-      : {
-          originChainTxHashes: [],
-          refundedAmount: "10500000",
-        },
-    ...overrides,
-  };
-}
+// `mockTerminalStatus` used to live here as a one-shot helper returning
+// a single `StatusPollResult`. No test imported it — status sequences
+// are always built via `mockHappyPathStatusSequence` or inline arrays
+// in the tests that need terminal responses. Removed to keep the mock
+// surface honest.

@@ -38,7 +38,6 @@
  *    operator needing EIP-712 typed data.
  *
  * @module ownership-proof
- * @see docs/X402SCAN_PLAN.md — Phase 2
  */
 
 import { ethers } from "ethers";

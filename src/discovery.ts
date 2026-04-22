@@ -23,7 +23,6 @@
  * JSON from `GET /.well-known/x402`.
  *
  * @module discovery
- * @see docs/X402SCAN_PLAN.md — Phase 3
  */
 
 import type { GatewayConfig } from "./config.js";

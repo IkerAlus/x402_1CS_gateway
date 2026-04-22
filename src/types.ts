@@ -120,8 +120,8 @@ export type SwapPhase =
 /**
  * Mutable state tracked per swap, keyed by the 1CS deposit address.
  *
- * Persisted in the {@link StateStore} (Phase 1) so that in-flight swaps
- * survive gateway restarts.
+ * Persisted in the {@link StateStore} so that in-flight swaps survive
+ * gateway restarts.
  */
 export interface SwapState {
   /** 1CS deposit address — also the primary key in the store. */
@@ -262,7 +262,6 @@ export interface PaymentPayloadRecord {
  * Extends the standard x402 `SettleResponse` with an `extra` field carrying
  * cross-chain settlement metadata from the 1CS swap.
  *
- * @see Research plan §6 — Settlement response
  */
 export interface SettlementResponseRecord {
   success: boolean;
@@ -311,13 +310,6 @@ export interface CrossChainSettlementExtra {
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
- * Returned by the settler after attempting to complete a swap.
- */
-export type SettlementResult =
-  | { success: true; response: SettlementResponseRecord }
-  | { success: false; error: string; refundInfo?: RefundInfo };
-
-/**
  * Information needed to route a refund back to the original buyer.
  */
 export interface RefundInfo {
@@ -334,8 +326,6 @@ export interface RefundInfo {
 //
 // Each error carries an `httpStatus` so the middleware can map it to the
 // correct HTTP response code without a separate lookup table.
-//
-// @see Research plan §8 — Error handling and edge cases
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
@@ -408,7 +398,6 @@ export class InsufficientGasError extends GatewayError {
  * 1CS swap reached a terminal failure state (FAILED/REFUNDED).
  * The middleware returns 502 Bad Gateway with a PAYMENT-RESPONSE header.
  *
- * @see Research plan §8 — Swap failure / refund
  */
 export class SwapFailedError extends GatewayError {
   constructor(
@@ -425,7 +414,6 @@ export class SwapFailedError extends GatewayError {
  * Polling 1CS `/v0/status` exceeded the configured maximum time.
  * The middleware returns 504 Gateway Timeout.
  *
- * @see Research plan §8 — Timeout
  */
 export class SwapTimeoutError extends GatewayError {
   constructor(message: string) {
@@ -435,7 +423,7 @@ export class SwapTimeoutError extends GatewayError {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// State store interface (implemented in Phase 1)
+// State store interface
 // ═══════════════════════════════════════════════════════════════════════
 
 /**

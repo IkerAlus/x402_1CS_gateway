@@ -1,14 +1,15 @@
 /**
- * x402-1CS Gateway — entry point.
+ * x402-1CS Gateway — public library surface.
  *
- * Loads configuration from environment variables, validates it, and
- * will eventually start the Express server with x402 middleware.
+ * Pure barrel file: re-exports every named symbol consumers need. No
+ * runtime side effects — importing this module will NOT load config,
+ * open network connections, or exit the process.
  *
- * For now (Phase 0) this simply validates config and confirms the
- * gateway is ready to proceed to Phase 1.
+ * The runnable HTTP gateway lives in `src/server.ts` and is started via
+ * `npx env-cmd npx tsx src/server.ts` (see `README.md` § "Start the
+ * gateway"). Library consumers import types and helpers from here and
+ * wire up their own runtime.
  */
-
-import { loadConfigFromEnv } from "./config.js";
 
 // ── Configuration ───────────────────────────────────────────────────
 export { GatewayConfigSchema, loadConfigFromEnv } from "./config.js";
@@ -79,19 +80,3 @@ export type { MiddlewareDeps } from "./middleware.js";
 // ── Provider Pool ──────────────────────────────────────────────────
 export { ProviderPool } from "./provider-pool.js";
 export type { ProviderPoolOptions } from "./provider-pool.js";
-
-function main() {
-  try {
-    const config = loadConfigFromEnv();
-    // eslint-disable-next-line no-console
-    console.log(
-      `[x402-1CS] Config loaded — network=${config.originNetwork}, ` +
-        `merchant=${config.merchantRecipient}, asset=${config.merchantAssetOut}`,
-    );
-  } catch (err) {
-    console.error("[x402-1CS] Invalid configuration:", err);
-    process.exit(1);
-  }
-}
-
-main();

@@ -177,9 +177,9 @@ export function buildQuoteDeadline(cfg: GatewayConfig): string {
  * Key design decisions:
  * - `swapType: EXACT_OUTPUT` — the merchant specifies what they want to receive
  * - `dry: false` — we need a real deposit address
- * - `refundTo: gatewayRefundAddress` — Option A from research plan §7 (D2):
- *   at quote time the buyer is unknown, so refunds go to the gateway which
- *   routes them back to the buyer's address (known after verification)
+ * - `refundTo: gatewayRefundAddress` — at quote time the buyer is unknown,
+ *   so refunds go to the gateway address which the operator then routes
+ *   back to the buyer (whose address is known post-verification)
  * - `depositType: ORIGIN_CHAIN` — the buyer deposits on the EVM origin chain
  * - `recipientType: DESTINATION_CHAIN` — merchant receives on the destination chain
  */
@@ -312,7 +312,7 @@ export function validateDeadline(quoteResponse: QuoteResponse, cfg: GatewayConfi
 /**
  * Map a 1CS QuoteResponse to an x402 PaymentRequirements record.
  *
- * Field mapping (from research plan §4):
+ * Field mapping:
  *
  * | x402 field          | Source                    | Derivation                                      |
  * |---------------------|---------------------------|-------------------------------------------------|

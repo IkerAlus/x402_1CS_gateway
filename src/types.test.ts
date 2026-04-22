@@ -21,7 +21,6 @@ import type {
   SwapState,
   OneClickStatus,
   PaymentRequirementsRecord,
-  SettlementResult,
   SettlementResponseRecord,
   CrossChainSettlementExtra,
   QuoteResponseRecord,
@@ -213,45 +212,6 @@ describe("Type shape checks (compile-time + runtime sanity)", () => {
     };
     expect(state.phase).toBe("QUOTED");
     expect(state.paymentRequirements.scheme).toBe("exact");
-  });
-
-  it("SettlementResult discriminated union works correctly", () => {
-    const success: SettlementResult = {
-      success: true,
-      response: {
-        success: true,
-        payer: "0xbuyer",
-        transaction: "0xtx",
-        network: "eip155:8453",
-        extra: {
-          settlementType: "crosschain-1cs",
-          swapStatus: "SUCCESS",
-          destinationChain: "near",
-          destinationAmount: "10000000",
-          destinationAsset: "nUSDC",
-          correlationId: "corr-1",
-        },
-      },
-    };
-    const failure: SettlementResult = {
-      success: false,
-      error: "swap timed out",
-      refundInfo: {
-        buyerAddress: "0xbuyer",
-        amount: "1050000",
-        reason: "TIMEOUT",
-      },
-    };
-    expect(success.success).toBe(true);
-    expect(failure.success).toBe(false);
-    if (success.success) {
-      expect(success.response.transaction).toBe("0xtx");
-      expect(success.response.extra?.settlementType).toBe("crosschain-1cs");
-      expect(success.response.extra?.destinationChain).toBe("near");
-    }
-    if (!failure.success) {
-      expect(failure.refundInfo?.buyerAddress).toBe("0xbuyer");
-    }
   });
 
   it("SettlementResponseRecord.extra is optional", () => {

@@ -7,7 +7,7 @@
  * other backend) requires only implementing the {@link StateStore} interface
  * from `./types.ts` — no changes to consuming code.
  *
- * Key behaviors (per the implementation roadmap):
+ * Key behaviors:
  * - `create` is idempotent: re-quoting the same deposit address overwrites
  * - `update` enforces optimistic locking via phase transition validation
  * - `listExpired` supports background cleanup of stale states
@@ -241,9 +241,9 @@ export class SqliteStateStore implements StateStore {
   // ── Query helpers (not part of StateStore interface) ────────────────
 
   /**
-   * List all swap states currently in a given phase.
-   * Useful for Phase 3 operations like finding in-flight settlements
-   * during graceful shutdown.
+   * List all swap states currently in a given phase. Used by the
+   * startup recovery path (`recoverInFlightSettlements`) to find swaps
+   * stuck in `BROADCASTING` / `BROADCAST` / `POLLING` after a restart.
    */
   // eslint-disable-next-line @typescript-eslint/require-await
   async listByPhase(phase: SwapPhase): Promise<SwapState[]> {
@@ -266,7 +266,7 @@ export class SqliteStateStore implements StateStore {
 
   /**
    * Count of swap states grouped by phase.
-   * Useful for health/metrics endpoints (Phase 3).
+   * Useful for health / metrics endpoints.
    */
   // eslint-disable-next-line @typescript-eslint/require-await
   async countByPhase(): Promise<Record<string, number>> {
@@ -483,7 +483,7 @@ export class InMemoryStateStore implements StateStore {
  * ```
  *
  * Currently supported backends: `"sqlite"`, `"memory"`.
- * Redis support is planned for Phase 3 (production hardening).
+ * Redis support is tracked as a production-hardening item in `docs/TODO.md`.
  */
 export async function createStateStore(
   options: CreateStoreOptions = {},
@@ -513,7 +513,7 @@ export async function createStateStore(
  */
 export interface CreateStoreOptions {
   /** Which backend to use. Defaults to `"sqlite"`. */
-  backend?: "sqlite" | "memory"; // | "redis" — Phase 3
+  backend?: "sqlite" | "memory"; // Redis backend tracked in docs/TODO.md
   /** SQLite file path (sqlite backend only). */
   filePath?: string;
   /** SQLite flush interval in ms (sqlite backend only). */

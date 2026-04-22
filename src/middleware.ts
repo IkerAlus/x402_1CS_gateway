@@ -1,8 +1,7 @@
 /**
  * x402 Middleware — Express middleware wiring quote-engine → verifier → settler.
  *
- * This module handles Step 2.1 of the implementation roadmap. It implements
- * the full x402 HTTP flow as an Express middleware:
+ * Implements the full x402 HTTP flow as an Express middleware:
  *
  * 1. **No PAYMENT-SIGNATURE header** → call Quote Engine → return 402 with
  *    `PAYMENT-REQUIRED` header containing the `PaymentRequired` envelope.
@@ -13,16 +12,15 @@
  *    - QUOTED → call Verifier → on success → call Settler → return 200
  * 3. Errors → appropriate HTTP status + PAYMENT-RESPONSE where applicable.
  *
- * Design decisions (all "recommended"):
- * - D-M1: Uses `@x402/core/http` for header encoding/decoding
- * - D-M2: Custom middleware (not `x402HTTPResourceServer`) — we are the facilitator
- * - D-M3: Empty body `{}` for 402 responses
- * - D-M4: Single `accepts` entry for v1
- * - D-M5: Awaits full cross-chain settlement (Option A)
- * - D-M6: Expired quotes → fresh 402
+ * Internal design notes (cross-referenced in body comments):
+ * - **D-M1**: Uses `@x402/core/http` for header encoding/decoding
+ * - **D-M2**: Custom middleware (not `x402HTTPResourceServer`) — we are the facilitator
+ * - **D-M3**: Empty body `{}` for 402 responses
+ * - **D-M4**: Single `accepts` entry
+ * - **D-M5**: Awaits full cross-chain settlement before responding
+ * - **D-M6**: Expired quotes → fresh 402
  *
  * @module middleware
- * @see Implementation roadmap Step 2.1
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from "express";

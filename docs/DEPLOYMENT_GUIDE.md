@@ -572,45 +572,7 @@ The gateway limits concurrent in-flight settlements (default: 10). If all slots 
 
 ### Project structure
 
-```
-x402_1CS_gateway/
-├── src/
-│   ├── server.ts              # HTTP entry point
-│   ├── config.ts              # Zod-validated env config
-│   ├── middleware.ts           # Express x402 middleware
-│   ├── quote-engine.ts        # 1CS quote building
-│   ├── verifier.ts            # EIP-3009/Permit2 signature verification
-│   ├── settler.ts             # Broadcast, deposit notify, status polling
-│   ├── store.ts               # State store (SQLite / in-memory)
-│   ├── provider-pool.ts       # RPC endpoint pool with failover
-│   ├── rate-limiter.ts        # Per-IP rate limiting, settlement cap, quote GC
-│   ├── types.ts               # Shared type definitions
-│   ├── index.ts               # Library entry point
-│   ├── client/                # Buyer-side client library
-│   │   ├── index.ts           #    Public API re-exports
-│   │   ├── types.ts           #    Client-side type definitions
-│   │   ├── signer.ts          #    EIP-3009 & Permit2 signing
-│   │   ├── x402-client.ts     #    X402Client class
-│   │   ├── signer.test.ts     #    Signing tests (12)
-│   │   └── x402-client.test.ts#    Client integration tests (18)
-│   ├── mocks/                 # Shared test mocks
-│   └── *.test.ts              # Unit & integration tests
-├── scripts/
-│   ├── test-client.ts         # CLI test client (dry-run / live)
-│   ├── verify-api-key.ts      # 1CS JWT verification
-│   └── test-1cs-quote.sh      # Shell script for raw quote testing
-├── docs/
-│   ├── DEPLOYMENT_GUIDE.md    # This file
-│   ├── USER_GUIDE.md          # Buyer-facing usage guide
-│   ├── Facilitator_keys_guidance.md  # Facilitator key management guide
-│   ├── TEST_RESULTS.md        # Latest test run results
-│   ├── verifier-flow.svg
-├── .env.example               # Environment variable template
-├── .env.stellar               # Pre-filled config for Stellar merchant destination
-├── vitest.config.ts           # Test runner configuration
-├── tsconfig.json              # TypeScript configuration
-└── package.json
-```
+See **[README.md § Project structure](../README.md#project-structure)** for the canonical file map. Keeping it in one place prevents drift — previous copies of the tree under `docs/` and `CLAUDE.local.md` were all stale by at least four new source files.
 
 ## 11. Cost estimate for a test
 

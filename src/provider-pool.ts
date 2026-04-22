@@ -1,20 +1,18 @@
 /**
  * RPC Provider Pool — round-robin provider management with health checks.
  *
- * This module handles Step 2.2 of the implementation roadmap. It manages a
- * pool of JSON-RPC providers for the origin chain and provides:
+ * Manages a pool of JSON-RPC providers for the origin chain and provides:
  *
  * 1. **Round-robin selection** — distributes RPC load across endpoints
  * 2. **Lazy health detection** — marks providers unhealthy on RPC errors
  * 3. **Automatic recovery** — periodically re-checks unhealthy providers
  * 4. **Wallet binding** — creates ethers.js Wallets bound to a healthy provider
  *
- * Design decision D-M7: Simple implementation — round-robin with lazy health
- * detection rather than a background health-check loop. Sufficient for v1
- * targeting 1-2 RPC endpoints on a single L2.
+ * Design note: round-robin with lazy health detection rather than a
+ * background health-check loop. Sufficient for 1-2 RPC endpoints on a
+ * single L2.
  *
  * @module provider-pool
- * @see Implementation roadmap Step 2.2
  */
 
 import { ethers } from "ethers";

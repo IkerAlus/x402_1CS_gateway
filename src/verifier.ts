@@ -1,8 +1,8 @@
 /**
  * Verifier — validates the buyer's x402 payment signature against stored requirements.
  *
- * This module handles Step 1.3 of the implementation roadmap. When the buyer
- * retries a request with a `PAYMENT-SIGNATURE` header, the verifier:
+ * When the buyer retries a request with a `PAYMENT-SIGNATURE` header, the
+ * verifier:
  *
  * 1. Decodes the payment payload to determine the asset transfer method
  *    (EIP-3009 or Permit2)
@@ -15,18 +15,16 @@
  * `ExactEvmScheme` facilitator, but adapted for ethers.js (the gateway's
  * EVM library) and with gateway-specific state management.
  *
- * **Simplification note (v1):** The spec recommends simulating
+ * **Simplification note:** The spec recommends simulating
  * `transferWithAuthorization` / `x402ExactPermit2Proxy.settle()` via
  * `eth_call` to confirm the transfer won't revert. The current
  * implementation performs signature recovery, field validation, and
  * on-chain balance/allowance checks but **skips the simulation step**.
- * This is acceptable for v1 where the settler handles broadcast errors
- * gracefully (D-S3 nonce pre-check + revert handling). Simulation
- * should be added in Phase 3 for defense-in-depth.
+ * This is acceptable because the settler handles broadcast errors
+ * gracefully (D-S3 nonce pre-check + revert handling). Simulation is a
+ * defense-in-depth item tracked in `docs/TODO.md`.
  *
  * @module verifier
- * @see Research plan §2 — Verifier module
- * @see Implementation roadmap Step 1.3
  */
 
 import { ethers } from "ethers";
@@ -653,8 +651,11 @@ export function validateRequirementsMatch(
  *
  * Some x402 clients put the signature directly on the authorization
  * object rather than at the top level. This is a fallback.
+ *
+ * Exported (not part of the public library barrel) so the settler can
+ * reuse the same extraction logic without a duplicate definition.
  */
-function extractSignatureFromAuth(
+export function extractSignatureFromAuth(
   auth: ExactEIP3009Payload["authorization"],
 ): `0x${string}` | undefined {
   // Check if the authorization has a signature field (non-standard but possible)

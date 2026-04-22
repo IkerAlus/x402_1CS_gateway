@@ -51,15 +51,11 @@ export {
   mockHappyPathStatusSequence,
   mockFailedStatusSequence,
   mockRefundedStatusSequence,
-  mockTerminalStatus,
 } from "./mock-1cs-responses.js";
 
 // Chain reader (verifier dependency)
 export {
   mockChainReader,
-  failingChainReader,
-  zeroBalanceChainReader,
-  zeroAllowanceChainReader,
 } from "./mock-chain-reader.js";
 export type { MockChainReaderOptions } from "./mock-chain-reader.js";
 

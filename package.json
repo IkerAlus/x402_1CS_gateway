@@ -7,8 +7,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
+    "clean": "rm -rf dist",
     "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.ts",
     "test": "vitest run",
     "test:live": "vitest run src/live-1cs.test.ts",
     "test:watch": "vitest",

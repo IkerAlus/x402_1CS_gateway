@@ -520,7 +520,7 @@ curl -s http://localhost:3402/openapi.json | jq '{openapi, info, paths: (.paths|
 
 ## 9. Running the test suite
 
-The project has 467 unit/integration tests plus 11 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
+The project has 466 unit/integration tests plus 11 live API tests (skipped by default). See `docs/TEST_RESULTS.md` for the latest run results.
 
 ### npm scripts
 
@@ -540,7 +540,7 @@ npm run format:check  # Prettier check
 npm test
 ```
 
-Runs 467 tests across 19 test files with fully mocked external dependencies (a 20th file, `live-1cs.test.ts`, runs only when `ONE_CLICK_JWT` is set). No API key, funds, or network access required. Covers:
+Runs 466 tests across 19 test files with fully mocked external dependencies (a 20th file, `live-1cs.test.ts`, runs only when `ONE_CLICK_JWT` is set). No API key, funds, or network access required. Covers:
 
 - **State store** (61 tests) — CRUD, TTL, concurrency, phase transitions, listByPhase, `listExpired` phase-filter
 - **Settler** (45 tests) — broadcast, deposit notification, status polling, timeout, **in-flight recovery** (deterministic via `tasks[]`)

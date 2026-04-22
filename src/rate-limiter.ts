@@ -1,5 +1,5 @@
 /**
- * Rate Limiting & Abuse Prevention — Phase 3.3 of the implementation roadmap.
+ * Rate Limiting & Abuse Prevention.
  *
  * This module provides three mechanisms to protect the gateway:
  *

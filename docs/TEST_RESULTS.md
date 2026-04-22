@@ -9,7 +9,7 @@
 
 ## 1. Mocked Test Suite (Unit + Integration)
 
-**Result: 467 passed | 0 failed | 11 skipped (live-only)**
+**Result: 466 passed | 0 failed | 11 skipped (live-only)**
 **Duration: ~2.5s total**
 
 | File | Tests | Duration | Description |
@@ -23,7 +23,7 @@
 | `src/config.test.ts` | 27 | 53ms | Zod schema validation, env var parsing, CORS allowlist parsing, recipient-format warnings, discovery env vars |
 | `src/rate-limiter.test.ts` | 25 | 149ms | Per-IP quote rate limiting, settlement limiter, quote GC (never deletes in-flight) |
 | `src/openapi.test.ts` | 24 | 48ms | OpenAPI 3.1 document structure, `x-payment-info`, `x-discovery`, x402 security scheme, per-operation responses |
-| `src/types.test.ts` | 22 | 32ms | Type guards, CAIP-2 parsing, error classes |
+| `src/types.test.ts` | 21 | 32ms | Type guards, CAIP-2 parsing, error classes |
 | `src/protected-routes.test.ts` | 21 | 17ms | Route shape validation, pricing modes, factory binding, invocability invariants |
 | `src/middleware.test.ts` | 19 | 156ms | Express middleware request/response handling + client-facing error sanitization + correlation IDs + server-side context logging |
 | `src/client/x402-client.test.ts` | 18 | 220ms | Full x402 client protocol against mocked gateway |
@@ -37,7 +37,7 @@
 ### Performance Notes
 
 - Total collection time: ~13s (TypeScript transform + module resolution)
-- Actual test execution: ~2.5s for 467 tests (~5.3ms per test average)
+- Actual test execution: ~2.3s for 466 tests (~4.9ms per test average)
 - Slowest file: `src/store.test.ts` (329ms) — SQLite init dominates. `src/settler.test.ts` dropped from ~610ms to 244ms after Tranche E removed two `setTimeout(r, 200)` real-timer sleeps in favour of awaiting `recoverInFlightSettlements`'s returned `tasks[]` directly.
 - All tests run in-process with mocked external dependencies (no network, no RPC)
 
@@ -103,9 +103,9 @@ Six tests were deleted from the live suite because they added no confidence that
 
 | Category | Tests | Pass Rate | Execution Time |
 |----------|------:|----------:|---------------:|
-| Unit + Integration (mocked) | 467 | 100% | ~2.5s |
+| Unit + Integration (mocked) | 466 | 100% | ~2.3s |
 | Live 1CS API | 11 | 100% | ~48s |
-| **Total** | **478** | **100%** | **~51s** |
+| **Total** | **477** | **100%** | **~50s** |
 
 ### Test distribution by module
 
@@ -120,7 +120,7 @@ Six tests were deleted from the live suite because they added no confidence that
 | Config | 27 | 0 | 27 |
 | Rate limiter | 25 | 0 | 25 |
 | OpenAPI builder | 24 | 0 | 24 |
-| Types | 22 | 0 | 22 |
+| Types | 21 | 0 | 21 |
 | Protected routes | 21 | 0 | 21 |
 | Middleware | 19 | 0 | 19 |
 | Client (x402-client) | 18 | 1 | 19 |

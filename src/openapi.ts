@@ -21,7 +21,6 @@
  * serves the resulting plain object as JSON from `GET /openapi.json`.
  *
  * @module openapi
- * @see docs/X402SCAN_PLAN.md — Phase 4
  */
 
 import type { GatewayConfig } from "./config.js";
@@ -159,7 +158,8 @@ function buildOperation(route: ProtectedRoute): Record<string, unknown> {
   // Attach request body when the route defines an input schema. We
   // advertise JSON for POST and query-style usage for GET (by convention
   // GET routes are parameterless here; the schema is still useful for
-  // the Bazaar `inputSchema` field when we wire that in Phase 5).
+  // the Bazaar `inputSchema` field if/when that deferred integration
+  // lands — see the "Non-Goals" section of docs/X402SCAN_PLAN.md).
   if (route.inputSchema) {
     attachRequestShape(operation, route.method, route.inputSchema);
   }
@@ -200,9 +200,10 @@ function buildPaymentInfo(pricing: RoutePricing): Record<string, unknown> {
  *
  * - For POST: an `application/json` `requestBody` whose schema is the
  *   registry's `inputSchema`.
- * - For GET: attach nothing at the operation level (GETs in the v1
- *   registry are parameterless); the Bazaar `info.inputSchema` on the
- *   402 challenge (Phase 5) is where the input shape actually lives.
+ * - For GET: attach nothing at the operation level (GETs in the current
+ *   registry are parameterless); a future Bazaar `info.inputSchema` on
+ *   the 402 challenge (deferred integration, see docs/X402SCAN_PLAN.md)
+ *   is where the input shape will live.
  */
 function attachRequestShape(
   operation: Record<string, unknown>,

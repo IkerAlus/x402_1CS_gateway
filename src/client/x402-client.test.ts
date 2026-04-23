@@ -22,10 +22,10 @@ import type {
 } from "./types.js";
 import { signEIP3009, signPermit2 } from "./signer.js";
 
-import { createX402Middleware } from "../middleware.js";
-import type { MiddlewareDeps } from "../middleware.js";
-import { InMemoryStateStore } from "../store.js";
-import type { QuoteFn } from "../quote-engine.js";
+import { createX402Middleware } from "../http/middleware.js";
+import type { MiddlewareDeps } from "../http/middleware.js";
+import { InMemoryStateStore } from "../storage/store.js";
+import type { QuoteFn } from "../payment/quote-engine.js";
 import type { QuoteResponse } from "../types.js";
 
 import {

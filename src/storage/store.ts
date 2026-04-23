@@ -5,7 +5,7 @@
  * The initial implementation uses SQLite (via sql.js) for single-instance
  * deployments. The design is structured so that swapping to Redis (or any
  * other backend) requires only implementing the {@link StateStore} interface
- * from `./types.ts` — no changes to consuming code.
+ * from `../types.ts` — no changes to consuming code.
  *
  * Key behaviors:
  * - `create` is idempotent: re-quoting the same deposit address overwrites
@@ -16,8 +16,8 @@
  */
 
 import initSqlJs, { type Database } from "sql.js";
-import type { StateStore, SwapState, SwapPhase } from "./types.js";
-import { VALID_PHASE_TRANSITIONS } from "./types.js";
+import type { StateStore, SwapState, SwapPhase } from "../types.js";
+import { VALID_PHASE_TRANSITIONS } from "../types.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // SQLite implementation

@@ -19,10 +19,10 @@ import {
   SettlementLimiter,
   QuoteGarbageCollector,
 } from "./rate-limiter.js";
-import { createX402Middleware } from "./middleware.js";
-import type { MiddlewareDeps } from "./middleware.js";
-import { InMemoryStateStore } from "./store.js";
-import { mockFastPollConfig } from "./mocks/mock-config.js";
+import { createX402Middleware } from "../http/middleware.js";
+import type { MiddlewareDeps } from "../http/middleware.js";
+import { InMemoryStateStore } from "../storage/store.js";
+import { mockFastPollConfig } from "../mocks/mock-config.js";
 import {
   mockBroadcastFn,
   mockDepositNotifyFn,
@@ -30,11 +30,11 @@ import {
   mockChainReader,
   signEIP3009Payload,
   buyerWallet,
-} from "./mocks/index.js";
-import type { SwapState, QuoteResponse } from "./types.js";
-import type { QuoteFn } from "./quote-engine.js";
-import { MOCK_DEPOSIT_ADDRESS, mockQuoteResponse } from "./mocks/mock-1cs-responses.js";
-import { mockPaymentRequirements } from "./mocks/mock-x402-payloads.js";
+} from "../mocks/index.js";
+import type { SwapState, QuoteResponse } from "../types.js";
+import type { QuoteFn } from "../payment/quote-engine.js";
+import { MOCK_DEPOSIT_ADDRESS, mockQuoteResponse } from "../mocks/mock-1cs-responses.js";
+import { mockPaymentRequirements } from "../mocks/mock-x402-payloads.js";
 
 function createMockQuoteFn(): QuoteFn {
   return async () => mockQuoteResponse() as unknown as QuoteResponse;

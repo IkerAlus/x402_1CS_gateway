@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { diagnoseQuoteRequest } from "./quote-engine.js";
-import { validateOwnershipProofs } from "./ownership-proof.js";
+import { diagnoseQuoteRequest } from "../payment/quote-engine.js";
+import { validateOwnershipProofs } from "../http/ownership-proof.js";
 
 /**
  * Gateway configuration schema.

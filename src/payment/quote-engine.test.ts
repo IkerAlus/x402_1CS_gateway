@@ -18,10 +18,10 @@ import {
   DeadlineTooShortError,
   OneClickApiError,
   OpenAPI,
-} from "./types.js";
-import type { QuoteResponse } from "./types.js";
-import type { GatewayConfig } from "./config.js";
-import type { SwapState, StateStore } from "./types.js";
+} from "../types.js";
+import type { QuoteResponse } from "../types.js";
+import type { GatewayConfig } from "../infra/config.js";
+import type { SwapState, StateStore } from "../types.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Test fixtures

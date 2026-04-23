@@ -6,7 +6,7 @@
  */
 
 import type { QuoteResponseRecord } from "../types.js";
-import type { StatusPollResult, DepositNotifyResult } from "../settler.js";
+import type { StatusPollResult, DepositNotifyResult } from "../payment/settler.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Deposit address (the key binding between x402 payTo and 1CS)

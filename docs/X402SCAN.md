@@ -10,7 +10,7 @@ This gateway ships three discovery surfaces out of the box:
 | Well-known | `GET /.well-known/x402` | Fallback / DNS `_x402` target — resources list + ownership proofs |
 | Runtime 402 | Every paid route | Live x402 `PAYMENT-REQUIRED` envelope (v2) |
 
-Adding a new paid endpoint is a one-line addition to `src/protected-routes.ts` — all three surfaces pick it up automatically.
+Adding a new paid endpoint is a one-line addition to `src/http/protected-routes.ts` — all three surfaces pick it up automatically.
 
 ---
 
@@ -190,7 +190,7 @@ The only constraint: your reverse proxy must forward both `/openapi.json` and `/
 
 ## Adding a new paid route
 
-The discovery surfaces read from a single registry in `src/protected-routes.ts`. Add a new entry and the OpenAPI doc, the well-known manifest, and the Express mount all pick it up automatically. Sketch:
+The discovery surfaces read from a single registry in `src/http/protected-routes.ts`. Add a new entry and the OpenAPI doc, the well-known manifest, and the Express mount all pick it up automatically. Sketch:
 
 ```ts
 export const PROTECTED_ROUTES: readonly ProtectedRoute[] = [
@@ -327,9 +327,9 @@ x402scan and third-party discovery tools can then find the gateway from DNS alon
 
 - [x402scan DISCOVERY.md](https://github.com/Merit-Systems/x402scan/blob/main/docs/DISCOVERY.md) — authoritative spec for fields and classifications
 - [x402 protocol](https://x402.org) — payment protocol this gateway implements
-- `src/openapi.ts` — OpenAPI document builder (pure function, tested in `src/openapi.test.ts`)
-- `src/discovery.ts` — well-known document builder (pure function, tested in `src/discovery.test.ts`)
-- `src/ownership-proof.ts` — canonical message + EIP-191 signing / recovery helpers
-- `src/protected-routes.ts` — registry of paid routes consumed by both discovery surfaces
+- `src/http/openapi.ts` — OpenAPI document builder (pure function, tested in `src/http/openapi.test.ts`)
+- `src/http/discovery.ts` — well-known document builder (pure function, tested in `src/http/discovery.test.ts`)
+- `src/http/ownership-proof.ts` — canonical message + EIP-191 signing / recovery helpers
+- `src/http/protected-routes.ts` — registry of paid routes consumed by both discovery surfaces
 - `scripts/generate-ownership-proof.ts` — stand-alone proof generator
 - `docs/X402SCAN_PLAN.md` — original integration design notes (Phases 1-7)

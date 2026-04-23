@@ -26,7 +26,7 @@
  * @module openapi
  */
 
-import type { GatewayConfig } from "./config.js";
+import type { GatewayConfig } from "../infra/config.js";
 import type {
   ProtectedMethod,
   ProtectedRoute,
@@ -68,7 +68,7 @@ export type OpenApiDocument = Record<string, unknown>;
  * generic OpenAPI tooling) and integrators can discover the shape
  * without parsing a live 402 response.
  *
- * Mirrors {@link import("./types.js").CrossChainQuoteExtra} 1:1. Kept as
+ * Mirrors {@link import("../types.js").CrossChainQuoteExtra} 1:1. Kept as
  * a module-level constant so a future shape change is one edit here +
  * one in `types.ts` + one in `quote-engine.ts`.
  */

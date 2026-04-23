@@ -12,7 +12,7 @@ import { ethers } from "ethers";
 import { buildWellKnownDocument, WELL_KNOWN_INSTRUCTIONS } from "./discovery.js";
 import { signOwnershipProof } from "./ownership-proof.js";
 import type { ProtectedRoute } from "./protected-routes.js";
-import { mockGatewayConfig } from "./mocks/mock-config.js";
+import { mockGatewayConfig } from "../mocks/mock-config.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Test fixtures

@@ -28,12 +28,12 @@
  */
 
 import { ethers } from "ethers";
-import type { GatewayConfig } from "./config.js";
+import type { GatewayConfig } from "../infra/config.js";
 import type {
   StateStore,
   PaymentPayloadRecord,
   PaymentRequirementsRecord,
-} from "./types.js";
+} from "../types.js";
 import {
   isEIP3009Payload,
   isPermit2Payload,

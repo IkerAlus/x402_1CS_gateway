@@ -15,9 +15,9 @@
  *
  *  1. `src/server.ts` — mounts each route through `createX402Middleware`
  *     and the entry's handler.
- *  2. `src/openapi.ts` — renders each entry as a path item in the
+ *  2. `src/http/openapi.ts` — renders each entry as a path item in the
  *     OpenAPI 3.x document served at `/openapi.json`.
- *  3. `src/discovery.ts` — emits each `path` as an absolute URL in the
+ *  3. `src/http/discovery.ts` — emits each `path` as an absolute URL in the
  *     `/.well-known/x402` fan-out document.
  *
  * Adding a new paid endpoint is one `PROTECTED_ROUTES` entry — the three
@@ -243,7 +243,7 @@ export const PROTECTED_ROUTES: readonly ProtectedRoute[] = [
     // if anyone mounts the raw registry entry by mistake.
     handler: (_req, _res, next) => next(new Error(
       "handler not bound — the registry entry must be cloned with a real handler at startup; " +
-      "see `buildPremiumHandler` in src/protected-routes.ts",
+      "see `buildPremiumHandler` in src/http/protected-routes.ts",
     )),
   },
 ];
@@ -257,7 +257,7 @@ export const PROTECTED_ROUTES: readonly ProtectedRoute[] = [
 // startup and replaces the placeholder handlers on cloned entries.
 // ═══════════════════════════════════════════════════════════════════════
 
-import type { GatewayConfig } from "./config.js";
+import type { GatewayConfig } from "../infra/config.js";
 
 /**
  * Build the handler for `GET /api/premium`. Kept co-located with the

@@ -5,7 +5,7 @@
  * allowances, authorization state) without real RPC calls.
  */
 
-import type { ChainReader } from "../verifier.js";
+import type { ChainReader } from "../payment/verifier.js";
 import { CHAIN_ID } from "./mock-config.js";
 import { PERMIT2_ADDRESS } from "@x402/evm";
 

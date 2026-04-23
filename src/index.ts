@@ -12,8 +12,8 @@
  */
 
 // ── Configuration ───────────────────────────────────────────────────
-export { GatewayConfigSchema, loadConfigFromEnv } from "./config.js";
-export type { GatewayConfig } from "./config.js";
+export { GatewayConfigSchema, loadConfigFromEnv } from "./infra/config.js";
+export type { GatewayConfig } from "./infra/config.js";
 
 // ── Types ───────────────────────────────────────────────────────────
 export * from "./types.js";
@@ -26,8 +26,8 @@ export {
   validatePhaseTransition,
   StateNotFoundError,
   InvalidPhaseTransitionError,
-} from "./store.js";
-export type { SqliteStoreOptions, CreateStoreOptions } from "./store.js";
+} from "./storage/store.js";
+export type { SqliteStoreOptions, CreateStoreOptions } from "./storage/store.js";
 
 // ── Quote Engine ────────────────────────────────────────────────────
 export {
@@ -40,8 +40,8 @@ export {
   mapToPaymentRequirements,
   computeMaxTimeoutSeconds,
   toQuoteResponseRecord,
-} from "./quote-engine.js";
-export type { BuildPaymentRequirementsResult, QuoteFn } from "./quote-engine.js";
+} from "./payment/quote-engine.js";
+export type { BuildPaymentRequirementsResult, QuoteFn } from "./payment/quote-engine.js";
 
 // ── Verifier ────────────────────────────────────────────────────────
 export {
@@ -49,8 +49,8 @@ export {
   extractChainId,
   validateRequirementsMatch,
   createChainReader,
-} from "./verifier.js";
-export type { VerifyResult, ChainReader, VerifierOptions } from "./verifier.js";
+} from "./payment/verifier.js";
+export type { VerifyResult, ChainReader, VerifierOptions } from "./payment/verifier.js";
 
 // ── Settler ─────────────────────────────────────────────────────────
 export {
@@ -61,7 +61,7 @@ export {
   createBroadcastFn,
   createDepositNotifyFn,
   createStatusPollFn,
-} from "./settler.js";
+} from "./payment/settler.js";
 export type {
   BroadcastFn,
   BroadcastResult,
@@ -71,12 +71,12 @@ export type {
   StatusPollResult,
   GasOptions,
   SettlerOptions,
-} from "./settler.js";
+} from "./payment/settler.js";
 
 // ── Middleware ──────────────────────────────────────────────────────
-export { createX402Middleware, createGatewayApp } from "./middleware.js";
-export type { MiddlewareDeps } from "./middleware.js";
+export { createX402Middleware, createGatewayApp } from "./http/middleware.js";
+export type { MiddlewareDeps } from "./http/middleware.js";
 
 // ── Provider Pool ──────────────────────────────────────────────────
-export { ProviderPool } from "./provider-pool.js";
-export type { ProviderPoolOptions } from "./provider-pool.js";
+export { ProviderPool } from "./infra/provider-pool.js";
+export type { ProviderPoolOptions } from "./infra/provider-pool.js";

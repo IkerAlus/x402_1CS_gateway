@@ -12,23 +12,23 @@
 import express from "express";
 import helmet from "helmet";
 import cors from "cors";
-import { loadConfigFromEnv } from "./config.js";
-import { buildCorsOptions } from "./cors-options.js";
-import { createStateStore } from "./store.js";
-import { ProviderPool } from "./provider-pool.js";
-import { createChainReader } from "./verifier.js";
+import { loadConfigFromEnv } from "./infra/config.js";
+import { buildCorsOptions } from "./http/cors-options.js";
+import { createStateStore } from "./storage/store.js";
+import { ProviderPool } from "./infra/provider-pool.js";
+import { createChainReader } from "./payment/verifier.js";
 import {
   createBroadcastFn,
   createDepositNotifyFn,
   createStatusPollFn,
   recoverInFlightSettlements,
-} from "./settler.js";
-import { createX402Middleware } from "./middleware.js";
-import type { MiddlewareDeps } from "./middleware.js";
-import { createRateLimiting, destroyRateLimiting } from "./rate-limiter.js";
-import { buildProtectedRoutes } from "./protected-routes.js";
-import { buildWellKnownDocument } from "./discovery.js";
-import { buildOpenApiDocument } from "./openapi.js";
+} from "./payment/settler.js";
+import { createX402Middleware } from "./http/middleware.js";
+import type { MiddlewareDeps } from "./http/middleware.js";
+import { createRateLimiting, destroyRateLimiting } from "./infra/rate-limiter.js";
+import { buildProtectedRoutes } from "./http/protected-routes.js";
+import { buildWellKnownDocument } from "./http/discovery.js";
+import { buildOpenApiDocument } from "./http/openapi.js";
 import { createRequire } from "node:module";
 
 async function main(): Promise<void> {

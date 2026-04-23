@@ -327,7 +327,7 @@ describe("loadConfigFromEnv", () => {
     it("emits an informational warning with the recovered signer for valid proofs", async () => {
       // Generate a real proof for a known URL so the recovery line shows up.
       const { ethers } = await import("ethers");
-      const { signOwnershipProof } = await import("./ownership-proof.js");
+      const { signOwnershipProof } = await import("../http/ownership-proof.js");
       const wallet = new ethers.Wallet("0x" + "ef".repeat(32));
       const proof = await signOwnershipProof(wallet, "https://gateway.example.com");
 

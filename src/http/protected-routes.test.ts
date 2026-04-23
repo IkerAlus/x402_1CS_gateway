@@ -18,7 +18,7 @@ import {
   validateProtectedRoutes,
   type ProtectedRoute,
 } from "./protected-routes.js";
-import { mockGatewayConfig } from "./mocks/mock-config.js";
+import { mockGatewayConfig } from "../mocks/mock-config.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Static registry shape

@@ -7,7 +7,7 @@
  * work together correctly per the x402 spec.
  *
  * NOTE: This file is INTENTIONALLY DISTINCT from `src/e2e.test.ts`.
- * - `e2e.test.ts` asserts the canonical x402 HTTP wire format (headers,
+ * - `src/e2e.test.ts` asserts the canonical x402 HTTP wire format (headers,
  *   status codes, base64 encoding) using supertest against a real Express app.
  * - This file fans the happy- and sad-path flows out across every
  *   `DESTINATION_PRESETS` entry (NEAR / Arbitrum / Ethereum / Polygon /
@@ -19,13 +19,13 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { InMemoryStateStore } from "../store.js";
-import { verifyPayment } from "../verifier.js";
-import { settlePayment } from "../settler.js";
+import { InMemoryStateStore } from "../storage/store.js";
+import { verifyPayment } from "../payment/verifier.js";
+import { settlePayment } from "../payment/settler.js";
 import type { SwapState } from "../types.js";
 
 // Import all mocks from the centralized index
-import { extractDestinationChain } from "../settler.js";
+import { extractDestinationChain } from "../payment/settler.js";
 import {
   mockFastPollConfig,
   mockPaymentRequirements,

@@ -78,8 +78,8 @@ For a gateway like ours with a differentiated value prop (cross-chain destinatio
 Every architectural decision in this gateway flows from one choice: `PaymentRequirements.payTo` is the **1CS deposit address**, not the merchant. The gateway must control the broadcast path to keep that substitution working cross-chain:
 
 - Buyer signs EIP-3009/Permit2 authorization to the 1CS deposit address
-- Gateway broadcasts `transferWithAuthorization` on Base ([settler.ts](../src/settler.ts))
-- Gateway calls `/v0/deposit/submit` on 1CS with the tx hash ([settler.ts](../src/settler.ts))
+- Gateway broadcasts `transferWithAuthorization` on Base ([settler.ts](../src/payment/settler.ts))
+- Gateway calls `/v0/deposit/submit` on 1CS with the tx hash ([settler.ts](../src/payment/settler.ts))
 - 1CS cross-chain-routes to the merchant's actual chain
 
 Tier 1 requires the **CDP Facilitator** to process the payment. Structurally that could still work — CDP's `settle` just broadcasts `transferWithAuthorization` to the address in the authorization (the 1CS deposit address), so the on-chain transfer lands correctly. But:
@@ -97,9 +97,9 @@ See the "Integration Paths" section below for how to proceed given these tradeof
 
 ### Already in place
 
-- ✅ v2 `PAYMENT-REQUIRED` envelope with correct `accepts[]` shape ([middleware.ts](../src/middleware.ts))
-- ✅ Protected-routes registry carrying `inputSchema` / `outputSchema` / `description` per route ([protected-routes.ts](../src/protected-routes.ts)) — **ready to emit as Bazaar metadata; just needs plumbing**
-- ✅ x402scan discovery surfaces ([openapi.ts](../src/openapi.ts), [discovery.ts](../src/discovery.ts)) and EIP-191 ownership proofs ([ownership-proof.ts](../src/ownership-proof.ts))
+- ✅ v2 `PAYMENT-REQUIRED` envelope with correct `accepts[]` shape ([middleware.ts](../src/http/middleware.ts))
+- ✅ Protected-routes registry carrying `inputSchema` / `outputSchema` / `description` per route ([protected-routes.ts](../src/http/protected-routes.ts)) — **ready to emit as Bazaar metadata; just needs plumbing**
+- ✅ x402scan discovery surfaces ([openapi.ts](../src/http/openapi.ts), [discovery.ts](../src/http/discovery.ts)) and EIP-191 ownership proofs ([ownership-proof.ts](../src/http/ownership-proof.ts))
 - ✅ A facilitator EVM key + balance check already in the request path
 - ✅ Category mapping is trivial — "Infrastructure" fits this gateway's value prop
 
@@ -110,7 +110,7 @@ See the "Integration Paths" section below for how to proceed given these tradeof
 | `extensions.bazaar.info` on the 402 challenge | [Bazaar spec](https://docs.cdp.coinbase.com/x402/bazaar) | **Not emitted** — Phase 5 of [X402SCAN_PLAN.md](./X402SCAN_PLAN.md) deferred (see [docs/TODO.md:50](./TODO.md)) | Wire `route.summary` / `route.description` / `route.inputSchema` / `route.outputSchema` from the registry into the envelope | **Blocker** for any automatic indexing |
 | Payments route through CDP Facilitator | Announcement quote | **None** — gateway self-facilitates via `FACILITATOR_PRIVATE_KEY` | Implement hybrid or full CDP delegation (see Paths B/C) | **Blocker** for Tier 1 |
 | CDP supports origin network | [CDP Facilitator docs](https://docs.cdp.coinbase.com/x402/core-concepts/facilitator) | Our origin is Base — ✅ supported | None | N/A |
-| Service profile metadata (name, description, inputSchema, outputSchema, pricing) | Implied by UX fields | All present in [protected-routes.ts](../src/protected-routes.ts) | None for data; plumbing missing | Low |
+| Service profile metadata (name, description, inputSchema, outputSchema, pricing) | Implied by UX fields | All present in [protected-routes.ts](../src/http/protected-routes.ts) | None for data; plumbing missing | Low |
 | Supported-networks field | UX fields | We can derive from `cfg.originNetwork` | Need to emit it consistently in Bazaar metadata | Low |
 | Curation (Tier 2) | Announcement | Not approached | Reach out to Coinbase DevRel | **Blocker only if targeting Tier 2** |
 | Public HTTPS domain | Implicit | Local/dev only | Deploy-time blocker, not code | Handled out of band |
@@ -144,7 +144,7 @@ The announcement says "when the CDP Facilitator processes a payment" — ambiguo
 
 ### Q4. Is `@x402/extensions/bazaar` compatible with our custom middleware?
 
-Our [middleware.ts](../src/middleware.ts) is a custom Express implementation, not the SDK's `paymentMiddleware()`. Need to check:
+Our [middleware.ts](../src/http/middleware.ts) is a custom Express implementation, not the SDK's `paymentMiddleware()`. Need to check:
 - Is the extension a drop-in builder we can call with a `ProtectedRoute`, or does it assume the SDK's middleware shape?
 - Version availability: the extension launched with Agentic.Market weeks ago; stability unclear.
 
@@ -266,7 +266,7 @@ Direct outreach to Coinbase DevRel / x402 team with a pitch: this is a cross-cha
 
 ### Phase 1 — `extensions.bazaar.info` on the 402 envelope
 
-Pick up Phase 5 of [X402SCAN_PLAN.md](./X402SCAN_PLAN.md). Modify `returnPaymentRequired()` in [src/middleware.ts](../src/middleware.ts) to accept a `ProtectedRoute` and emit:
+Pick up Phase 5 of [X402SCAN_PLAN.md](./X402SCAN_PLAN.md). Modify `returnPaymentRequired()` in [src/http/middleware.ts](../src/http/middleware.ts) to accept a `ProtectedRoute` and emit:
 
 ```typescript
 {
@@ -287,21 +287,21 @@ Pick up Phase 5 of [X402SCAN_PLAN.md](./X402SCAN_PLAN.md). Modify `returnPayment
 }
 ```
 
-Route plumbing: [middleware.ts](../src/middleware.ts) has no per-route context today — add a factory `createX402Middleware(deps, route)` and bind per route in [server.ts](../src/server.ts), or attach the route on `res.locals` at mount time.
+Route plumbing: [middleware.ts](../src/http/middleware.ts) has no per-route context today — add a factory `createX402Middleware(deps, route)` and bind per route in [server.ts](../src/server.ts), or attach the route on `res.locals` at mount time.
 
 **Open:** confirm the exact `info` shape with `@x402/extensions/bazaar` (Q4). If the SDK ships a builder, use it.
 
-**Tests:** extend [src/middleware.test.ts](../src/middleware.test.ts) — the envelope's `extensions.bazaar.info` matches the route entry; absent when the route has no schemas; category stable.
+**Tests:** extend [src/http/middleware.test.ts](../src/http/middleware.test.ts) — the envelope's `extensions.bazaar.info` matches the route entry; absent when the route has no schemas; category stable.
 
 **Effort:** ~45 min.
 
 ### Phase 2 — Category tagging in the registry
 
-Add an optional `category` field to `ProtectedRoute` in [src/protected-routes.ts](../src/protected-routes.ts) mapping to Agentic.Market's taxonomy (`inference` | `data` | `media` | `search` | `social` | `infrastructure` | `trading`). Use `infrastructure` for the demo route — the gateway *itself* is an infrastructure service.
+Add an optional `category` field to `ProtectedRoute` in [src/http/protected-routes.ts](../src/http/protected-routes.ts) mapping to Agentic.Market's taxonomy (`inference` | `data` | `media` | `search` | `social` | `infrastructure` | `trading`). Use `infrastructure` for the demo route — the gateway *itself* is an infrastructure service.
 
-Emit in the Bazaar envelope (Phase 1), in the `/openapi.json` `x-payment-info` block ([openapi.ts](../src/openapi.ts)), and in the `/.well-known/x402` document ([discovery.ts](../src/discovery.ts)) for consistency.
+Emit in the Bazaar envelope (Phase 1), in the `/openapi.json` `x-payment-info` block ([openapi.ts](../src/http/openapi.ts)), and in the `/.well-known/x402` document ([discovery.ts](../src/http/discovery.ts)) for consistency.
 
-**Tests:** [src/protected-routes.test.ts](../src/protected-routes.test.ts) — category value in allowed enum; [src/openapi.test.ts](../src/openapi.test.ts) + [src/discovery.test.ts](../src/discovery.test.ts) — category propagates.
+**Tests:** [src/http/protected-routes.test.ts](../src/http/protected-routes.test.ts) — category value in allowed enum; [src/http/openapi.test.ts](../src/http/openapi.test.ts) + [src/http/discovery.test.ts](../src/http/discovery.test.ts) — category propagates.
 
 **Effort:** ~30 min.
 
@@ -406,6 +406,6 @@ curl -s http://localhost:3402/.well-known/x402 | jq '.resources'
 - [CDP Facilitator](https://docs.cdp.coinbase.com/x402/core-concepts/facilitator) — facilitator we'd integrate with in Paths B/C
 - [X402SCAN_PLAN.md](./X402SCAN_PLAN.md) — complementary crawler-based discovery (Phase 5 is shared work)
 - [X402SCAN.md](./X402SCAN.md) — operator guide Phase 4 will mirror
-- [src/middleware.ts](../src/middleware.ts) — Phase 1 target
-- [src/protected-routes.ts](../src/protected-routes.ts) — data source for Bazaar metadata
-- [src/settler.ts](../src/settler.ts) — why we can't trivially swap in CDP Facilitator
+- [src/http/middleware.ts](../src/http/middleware.ts) — Phase 1 target
+- [src/http/protected-routes.ts](../src/http/protected-routes.ts) — data source for Bazaar metadata
+- [src/payment/settler.ts](../src/payment/settler.ts) — why we can't trivially swap in CDP Facilitator

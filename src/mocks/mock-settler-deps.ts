@@ -12,7 +12,7 @@ import type {
   DepositNotifyResult,
   StatusPollFn,
   StatusPollResult,
-} from "../settler.js";
+} from "../payment/settler.js";
 import type { ExactEIP3009Payload, ExactPermit2Payload } from "@x402/evm";
 import {
   mockDepositNotifyResponse,

@@ -1,5 +1,5 @@
 import type { CorsOptions } from "cors";
-import type { GatewayConfig } from "./config.js";
+import type { GatewayConfig } from "../infra/config.js";
 
 /**
  * Build CORS options for the gateway.

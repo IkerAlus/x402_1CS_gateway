@@ -23,8 +23,8 @@
  * @module rate-limiter
  */
 
-import type { StateStore } from "./types.js";
-import { GC_ELIGIBLE_PHASES } from "./types.js";
+import type { StateStore } from "../types.js";
+import { GC_ELIGIBLE_PHASES } from "../types.js";
 import type { GatewayConfig } from "./config.js";
 
 // ═══════════════════════════════════════════════════════════════════════

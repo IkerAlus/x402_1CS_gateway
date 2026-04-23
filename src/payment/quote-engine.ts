@@ -11,14 +11,14 @@
  *
  */
 
-import type { GatewayConfig } from "./config.js";
-import type { QuoteResponse } from "./types.js";
+import type { GatewayConfig } from "../infra/config.js";
+import type { QuoteResponse } from "../types.js";
 import {
   OneClickService,
   OpenAPI,
   OneClickApiError,
   QuoteRequest,
-} from "./types.js";
+} from "../types.js";
 import type {
   PaymentRequirementsRecord,
   QuoteResponseRecord,
@@ -26,15 +26,15 @@ import type {
   StateStore,
   AssetTransferMethod,
   CrossChainQuoteExtra,
-} from "./types.js";
+} from "../types.js";
 import {
   QuoteUnavailableError,
   AuthenticationError,
   ServiceUnavailableError,
   DeadlineTooShortError,
   GatewayError,
-} from "./types.js";
-import type { ErrorContext } from "./types.js";
+} from "../types.js";
+import type { ErrorContext } from "../types.js";
 import {
   EVM_CHAIN_PREFIXES,
   NON_EVM_CHAIN_PREFIXES,

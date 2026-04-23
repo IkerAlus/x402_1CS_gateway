@@ -29,13 +29,13 @@ import {
 } from "@x402/core/http";
 import { ethers } from "ethers";
 
-import { createX402Middleware } from "./middleware.js";
-import type { MiddlewareDeps } from "./middleware.js";
-import { InMemoryStateStore } from "./store.js";
-import type { GatewayConfig } from "./config.js";
+import { createX402Middleware } from "./http/middleware.js";
+import type { MiddlewareDeps } from "./http/middleware.js";
+import { InMemoryStateStore } from "./storage/store.js";
+import type { GatewayConfig } from "./infra/config.js";
 import type { QuoteResponse } from "./types.js";
-import type { QuoteFn } from "./quote-engine.js";
-import { configureOneClickSdk, defaultQuoteFn } from "./quote-engine.js";
+import type { QuoteFn } from "./payment/quote-engine.js";
+import { configureOneClickSdk, defaultQuoteFn } from "./payment/quote-engine.js";
 import {
   mockBroadcastFn,
   mockDepositNotifyFn,

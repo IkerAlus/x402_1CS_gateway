@@ -9,7 +9,7 @@
  * and JWT which are test-only.
  */
 
-import type { GatewayConfig } from "../config.js";
+import type { GatewayConfig } from "../infra/config.js";
 import { FACILITATOR_PRIVATE_KEY, FACILITATOR_ADDRESS } from "./mock-wallets.js";
 
 // ═══════════════════════════════════════════════════════════════════════

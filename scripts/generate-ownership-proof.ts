@@ -45,7 +45,7 @@ import {
   normalizePublicBaseUrl,
   signOwnershipProof,
   recoverOwnershipProofSigner,
-} from "../src/ownership-proof.js";
+} from "../src/http/ownership-proof.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // CLI / env parsing

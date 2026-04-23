@@ -498,7 +498,7 @@ The gateway exposes three surfaces that discovery crawlers like [x402scan](https
 | `GET /.well-known/x402` | Fan-out JSON (`version`, `resources[]`, `ownershipProofs[]`) — fallback surface and DNS `_x402` target |
 | Every paid route | Runtime x402 `PAYMENT-REQUIRED` envelope (v2) on the 402 response |
 
-Both discovery endpoints are unauthenticated and always served — including during local development — so crawlers can probe them without credentials. A single registry (`src/protected-routes.ts`) drives all three surfaces: add one entry and OpenAPI, `/.well-known/x402`, and the Express mount pick it up automatically.
+Both discovery endpoints are unauthenticated and always served — including during local development — so crawlers can probe them without credentials. A single registry (`src/http/protected-routes.ts`) drives all three surfaces: add one entry and OpenAPI, `/.well-known/x402`, and the Express mount pick it up automatically.
 
 ### Enable discovery
 

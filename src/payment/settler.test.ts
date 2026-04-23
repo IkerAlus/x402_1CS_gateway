@@ -22,8 +22,8 @@ import {
   type StatusPollFn,
   type StatusPollResult,
 } from "./settler.js";
-import { SettlementLimiter } from "./rate-limiter.js";
-import { InMemoryStateStore } from "./store.js";
+import { SettlementLimiter } from "../infra/rate-limiter.js";
+import { InMemoryStateStore } from "../storage/store.js";
 import type {
   SwapState,
   PaymentPayloadRecord,
@@ -31,14 +31,14 @@ import type {
   QuoteResponseRecord,
   SettlementResponseRecord,
   OneClickStatus,
-} from "./types.js";
+} from "../types.js";
 import {
   SwapFailedError,
   SwapTimeoutError,
   InsufficientGasError,
-} from "./types.js";
-import type { GatewayConfig } from "./config.js";
-import { mockGatewayConfig, NETWORK, USDC_ADDRESS } from "./mocks/index.js";
+} from "../types.js";
+import type { GatewayConfig } from "../infra/config.js";
+import { mockGatewayConfig, NETWORK, USDC_ADDRESS } from "../mocks/index.js";
 import type {
   ExactEIP3009Payload,
   ExactPermit2Payload,

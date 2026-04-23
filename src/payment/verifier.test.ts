@@ -15,14 +15,14 @@ import {
   type ChainReader,
   type VerifierOptions,
 } from "./verifier.js";
-import { InMemoryStateStore } from "./store.js";
+import { InMemoryStateStore } from "../storage/store.js";
 import type {
   SwapState,
   PaymentPayloadRecord,
   PaymentRequirementsRecord,
-} from "./types.js";
-import type { GatewayConfig } from "./config.js";
-import { mockGatewayConfig } from "./mocks/mock-config.js";
+} from "../types.js";
+import type { GatewayConfig } from "../infra/config.js";
+import { mockGatewayConfig } from "../mocks/mock-config.js";
 import {
   authorizationTypes,
   permit2WitnessTypes,

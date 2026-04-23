@@ -15,8 +15,8 @@ import {
 } from "@x402/core/http";
 import { createX402Middleware } from "./middleware.js";
 import type { MiddlewareDeps } from "./middleware.js";
-import { InMemoryStateStore } from "./store.js";
-import type { StateStore, PaymentPayloadRecord, SwapState } from "./types.js";
+import { InMemoryStateStore } from "../storage/store.js";
+import type { StateStore, PaymentPayloadRecord, SwapState } from "../types.js";
 import {
   mockGatewayConfig,
   mockFastPollConfig,
@@ -31,9 +31,9 @@ import {
   BUYER_ADDRESS,
   signEIP3009Payload,
   mockPaymentRequirements,
-} from "./mocks/index.js";
-import type { QuoteFn } from "./quote-engine.js";
-import type { QuoteResponse } from "./types.js";
+} from "../mocks/index.js";
+import type { QuoteFn } from "../payment/quote-engine.js";
+import type { QuoteResponse } from "../types.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Test helpers
@@ -453,7 +453,7 @@ describe("x402 Middleware", () => {
 
     it("does not leak facilitator wallet balance in InsufficientGasError (503)", async () => {
       // broadcastFn throws InsufficientGasError directly; message leaks wei amounts.
-      const { InsufficientGasError } = await import("./types.js");
+      const { InsufficientGasError } = await import("../types.js");
       const leakyBroadcast = mockBroadcastFn({
         eip3009Error: new InsufficientGasError(
           "Facilitator gas balance too low: 123456789012345 wei, need at least 900000000000000 wei",
@@ -593,7 +593,7 @@ describe("x402 Middleware", () => {
     it("logs err.context as a second stderr line when GatewayError carries context", async () => {
       // Throw a QuoteUnavailableError with a context bag (the shape the quote
       // engine produces on 1CS 400). The middleware must echo it into the log.
-      const { QuoteUnavailableError } = await import("./types.js");
+      const { QuoteUnavailableError } = await import("../types.js");
       const failQuoteFn: QuoteFn = async () => {
         throw new QuoteUnavailableError(
           "1CS quote rejected (400): Internal server error",
@@ -632,7 +632,7 @@ describe("x402 Middleware", () => {
     });
 
     it("omits the context line when GatewayError has no context", async () => {
-      const { QuoteUnavailableError } = await import("./types.js");
+      const { QuoteUnavailableError } = await import("../types.js");
       const failQuoteFn: QuoteFn = async () => {
         throw new QuoteUnavailableError("plain error, no context");
       };

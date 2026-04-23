@@ -30,24 +30,24 @@ import {
   encodePaymentResponseHeader,
 } from "@x402/core/http";
 import type { PaymentRequired, SettleResponse, Network } from "@x402/core/types";
-import type { GatewayConfig } from "./config.js";
-import type { StateStore, PaymentPayloadRecord } from "./types.js";
-import { GatewayError } from "./types.js";
-import { buildPaymentRequirements } from "./quote-engine.js";
-import type { QuoteFn } from "./quote-engine.js";
-import { verifyPayment } from "./verifier.js";
-import type { ChainReader } from "./verifier.js";
-import { settlePayment } from "./settler.js";
+import type { GatewayConfig } from "../infra/config.js";
+import type { StateStore, PaymentPayloadRecord } from "../types.js";
+import { GatewayError } from "../types.js";
+import { buildPaymentRequirements } from "../payment/quote-engine.js";
+import type { QuoteFn } from "../payment/quote-engine.js";
+import { verifyPayment } from "../payment/verifier.js";
+import type { ChainReader } from "../payment/verifier.js";
+import { settlePayment } from "../payment/settler.js";
 import type {
   BroadcastFn,
   DepositNotifyFn,
   StatusPollFn,
   SettlerOptions,
-} from "./settler.js";
+} from "../payment/settler.js";
 import type {
   QuoteRateLimiter,
   SettlementLimiter,
-} from "./rate-limiter.js";
+} from "../infra/rate-limiter.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Types
@@ -505,7 +505,7 @@ function handleError(res: Response, err: unknown): void {
  * template literal `${string}:${string}`.
  */
 function toPaymentRequirements(
-  record: import("./types.js").PaymentRequirementsRecord,
+  record: import("../types.js").PaymentRequirementsRecord,
 ): import("@x402/core/types").PaymentRequirements {
   return {
     ...record,
@@ -518,7 +518,7 @@ function toPaymentRequirements(
  * type expected by `encodePaymentResponseHeader`.
  */
 function toSettleResponse(
-  record: import("./types.js").SettlementResponseRecord,
+  record: import("../types.js").SettlementResponseRecord,
 ): SettleResponse {
   return {
     success: record.success,

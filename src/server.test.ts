@@ -12,11 +12,11 @@ import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import request from "supertest";
-import { buildCorsOptions } from "./cors-options.js";
-import type { GatewayConfig } from "./config.js";
-import { buildWellKnownDocument } from "./discovery.js";
-import { buildOpenApiDocument } from "./openapi.js";
-import { buildProtectedRoutes } from "./protected-routes.js";
+import { buildCorsOptions } from "./http/cors-options.js";
+import type { GatewayConfig } from "./infra/config.js";
+import { buildWellKnownDocument } from "./http/discovery.js";
+import { buildOpenApiDocument } from "./http/openapi.js";
+import { buildProtectedRoutes } from "./http/protected-routes.js";
 import { mockGatewayConfig } from "./mocks/mock-config.js";
 
 /** Minimal app mirroring `server.ts` middleware chain. */

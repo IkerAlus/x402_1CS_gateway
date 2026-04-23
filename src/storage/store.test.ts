@@ -15,8 +15,8 @@ import {
   StateNotFoundError,
   InvalidPhaseTransitionError,
 } from "./store.js";
-import type { StateStore, SwapState, SwapPhase } from "./types.js";
-import { VALID_PHASE_TRANSITIONS, GC_ELIGIBLE_PHASES } from "./types.js";
+import type { StateStore, SwapState, SwapPhase } from "../types.js";
+import { VALID_PHASE_TRANSITIONS, GC_ELIGIBLE_PHASES } from "../types.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Test helpers

@@ -59,7 +59,7 @@ function decodeBase64<T>(encoded: string): T {
 /**
  * Shape of the informational 1CS-quote metadata the gateway carries on
  * `accepts[0].extra.crossChain`. Mirrors `CrossChainQuoteExtra` in
- * `src/types.ts`. Present on every 402 from this gateway; absent when
+ * `src/types.ts` (cross-cutting root module). Present on every 402 from this gateway; absent when
  * probing a non-1CS gateway — hence the whole block is typed optional.
  */
 interface CrossChainQuoteExtra {

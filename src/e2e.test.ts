@@ -27,10 +27,10 @@ import {
 } from "@x402/core/http";
 import type { PaymentRequired } from "@x402/core/types";
 
-import { createX402Middleware } from "./middleware.js";
-import type { MiddlewareDeps } from "./middleware.js";
-import { InMemoryStateStore } from "./store.js";
-import type { QuoteFn } from "./quote-engine.js";
+import { createX402Middleware } from "./http/middleware.js";
+import type { MiddlewareDeps } from "./http/middleware.js";
+import { InMemoryStateStore } from "./storage/store.js";
+import type { QuoteFn } from "./payment/quote-engine.js";
 import type { QuoteResponse, PaymentPayloadRecord } from "./types.js";
 
 import {

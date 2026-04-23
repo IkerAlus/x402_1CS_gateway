@@ -23,9 +23,9 @@
  */
 
 import { ethers } from "ethers";
-import type { GatewayConfig } from "./config.js";
+import type { GatewayConfig } from "../infra/config.js";
 import { configureOneClickSdk } from "./quote-engine.js";
-import type { SettlementLimiter } from "./rate-limiter.js";
+import type { SettlementLimiter } from "../infra/rate-limiter.js";
 import type {
   StateStore,
   SwapState,
@@ -34,7 +34,7 @@ import type {
   CrossChainSettlementExtra,
   OneClickStatus,
   RefundInfo,
-} from "./types.js";
+} from "../types.js";
 import {
   OneClickService,
   TERMINAL_STATUSES,
@@ -42,7 +42,7 @@ import {
   SwapTimeoutError,
   InsufficientGasError,
   GatewayError,
-} from "./types.js";
+} from "../types.js";
 import { extractSignatureFromAuth } from "./verifier.js";
 import { NEP141_CHAIN_MAP } from "./chain-prefixes.js";
 
@@ -1101,7 +1101,7 @@ async function failSwap(
 }
 
 // The OMFT chain-prefix → canonical chain identifier map is the single
-// source of truth in `src/chain-prefixes.ts` (`NEP141_CHAIN_MAP`). The
+// source of truth in `src/payment/chain-prefixes.ts` (`NEP141_CHAIN_MAP`). The
 // `EVM_CHAIN_PREFIXES` / `NON_EVM_CHAIN_PREFIXES` lists used by config
 // validation and quote-engine diagnosis are derived from the same map,
 // so adding a new chain is one edit in one place.

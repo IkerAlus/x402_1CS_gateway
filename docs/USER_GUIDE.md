@@ -238,7 +238,7 @@ if (result.success) {
 }
 ```
 
-The `X402Client` handles all four protocol steps internally: request -> decode 402 -> sign -> submit. See the [Deployment Guide](DEPLOYMENT_GUIDE.md) section 7 for step-by-step usage and the full exported API.
+The `X402Client` handles all four protocol steps internally: request -> decode 402 -> sign -> submit. See [README § 7 Programmatic client](../README.md#7-programmatic-client-srcclient) for step-by-step usage and the full exported API.
 
 ---
 
@@ -259,7 +259,7 @@ npm install
 The gateway operator must configure and start the server. If you're testing locally, the simplest method:
 
 ```bash
-# Edit .env with your config (see DEPLOYMENT_GUIDE.md section 2)
+# Edit .env with your config (see README § 2 Configure environment)
 npx env-cmd npx tsx src/server.ts
 ```
 

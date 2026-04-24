@@ -11,53 +11,57 @@ This is project is in alpha state. Check the [TODO](docs/TODO.md) list for what 
 ```
 x402_1CS_gateway/
 ├── src/
-│   ├── server.ts              # HTTP entry point
-│   ├── config.ts              # Zod-validated env config
-│   ├── cors-options.ts        # CORS options builder (helmet+cors wired in server.ts)
-│   ├── middleware.ts           # Express x402 middleware
-│   ├── quote-engine.ts        # 1CS quote building + diagnoseQuoteRequest
-│   ├── verifier.ts            # EIP-3009/Permit2 signature verification
-│   ├── settler.ts             # Broadcast, deposit notify, status polling
-│   ├── store.ts               # State store (SQLite / in-memory)
-│   ├── provider-pool.ts       # RPC endpoint pool with failover
-│   ├── rate-limiter.ts        # Per-IP rate limiting, settlement cap, quote GC
-│   ├── chain-prefixes.ts      # Shared NEP-141 chain metadata + helpers
-│   ├── protected-routes.ts    # Registry of paid routes (single source of truth)
-│   ├── discovery.ts           # /.well-known/x402 document builder
-│   ├── openapi.ts             # /openapi.json document builder
-│   ├── ownership-proof.ts     # x402scan ownership-proof canonical message + EIP-191 helpers
-│   ├── types.ts               # Shared type definitions (including ErrorContext)
-│   ├── index.ts               # Library entry point
-│   ├── server.test.ts         # CORS + helmet + discovery endpoint tests (9)
-│   ├── client/                # Buyer-side client library
-│   │   ├── index.ts           #    Public API re-exports
-│   │   ├── types.ts           #    Client-side type definitions
-│   │   ├── signer.ts          #    EIP-3009 & Permit2 signing
-│   │   ├── x402-client.ts     #    X402Client class
-│   │   ├── signer.test.ts     #    Signing tests (12)
-│   │   └── x402-client.test.ts#    Client integration tests (18)
-│   ├── mocks/                 # Shared test mocks
-│   └── *.test.ts              # Unit & integration tests
+│   ├── server.ts                 # HTTP entry point
+│   ├── index.ts                  # Library barrel export
+│   ├── types.ts                  # Shared types (errors, state machine, ErrorContext)
+│   ├── e2e.test.ts               # HTTP protocol compliance tests
+│   ├── live-1cs.test.ts          # Live 1CS API tests (gated by ONE_CLICK_JWT)
+│   ├── server.test.ts            # CORS + helmet + discovery endpoint tests
+│   ├── payment/                  # x402 payment pipeline
+│   │   ├── quote-engine.ts       #   1CS quote → x402 PaymentRequirements
+│   │   ├── verifier.ts           #   EIP-3009 / Permit2 signature verification
+│   │   ├── settler.ts            #   Broadcast + deposit notify + status polling
+│   │   └── chain-prefixes.ts     #   NEP-141 chain metadata + recipient helpers
+│   ├── http/                     # Express wiring + discovery surfaces
+│   │   ├── middleware.ts         #   x402 middleware (402 / verify / settle)
+│   │   ├── protected-routes.ts   #   Registry of paid routes (single source of truth)
+│   │   ├── discovery.ts          #   /.well-known/x402 document builder
+│   │   ├── openapi.ts            #   /openapi.json document builder
+│   │   ├── ownership-proof.ts    #   x402scan EIP-191 canonical message + helpers
+│   │   └── cors-options.ts       #   CORS + helmet option builder
+│   ├── storage/
+│   │   └── store.ts              # SQLite + in-memory state store
+│   ├── infra/                    # Runtime infrastructure
+│   │   ├── config.ts             #   Zod-validated env config
+│   │   ├── rate-limiter.ts       #   Per-IP quote limits, settlement cap, quote GC
+│   │   └── provider-pool.ts      #   RPC provider rotation + failover
+│   ├── client/                   # Buyer-side client library
+│   │   ├── index.ts              #   Public API re-exports
+│   │   ├── types.ts              #   Client-side type definitions
+│   │   ├── signer.ts             #   EIP-3009 & Permit2 signing
+│   │   └── x402-client.ts        #   X402Client class
+│   └── mocks/                    # Shared test fixtures (barrel-exported)
 ├── scripts/
 │   ├── test-client.ts                   # CLI test client (dry-run / live)
 │   ├── verify-api-key.ts                # 1CS JWT verification
 │   ├── generate-ownership-proof.ts      # x402scan ownership-proof signer CLI
 │   └── test-1cs-quote.sh                # Shell script for raw quote testing
 ├── docs/
-│   ├── TODO.md                # Production-readiness checklist
-│   ├── DEPLOYMENT_GUIDE.md    # Deployment and production setup
-│   ├── USER_GUIDE.md          # Buyer-facing usage guide
-│   ├── X402SCAN.md            # x402scan registration guide
-│   ├── X402SCAN_PLAN.md       # x402scan integration design notes
+│   ├── TODO.md                       # Production-readiness checklist
+│   ├── USER_GUIDE.md                 # Buyer-facing usage guide
+│   ├── X402SCAN.md                   # x402scan registration guide
+│   ├── X402SCAN_PLAN.md              # x402scan integration design notes (historical)
 │   ├── Facilitator_keys_guidance.md  # Facilitator key management guide
-│   ├── TEST_RESULTS.md        # Latest test run results
-│   ├── verifier-flow.svg
-├── .env.example               # Environment variable template
-├── .env.stellar               # Pre-filled config for Stellar merchant destination
-├── vitest.config.ts           # Test runner configuration
-├── tsconfig.json              # TypeScript configuration
+│   ├── TEST_RESULTS.md               # Latest test run results
+│   └── verifier-flow.svg
+├── .env.example                      # Environment variable template
+├── .env.stellar                      # Pre-filled config for Stellar merchant destination
+├── vitest.config.ts                  # Test runner configuration
+├── tsconfig.json                     # TypeScript configuration
 └── package.json
 ```
+
+Tests live next to their source (`src/payment/quote-engine.test.ts`, `src/http/middleware.test.ts`, etc.); the two root-level files `e2e.test.ts` and `live-1cs.test.ts` are system-level by design.
 
 ---
 
@@ -420,6 +424,16 @@ Step 4: GET with PAYMENT-SIGNATURE -> awaiting settlement...
 
   Resource body: { "message": "You've paid! Here is your premium content." }
 ```
+
+### Cost estimate per test
+
+For a minimal test with `MERCHANT_AMOUNT_OUT=1000000` (1 USDC):
+
+- **Buyer pays**: ~1.05 USDC (the extra covers 1CS fees + slippage buffer; any excess is refunded to `GATEWAY_REFUND_ADDRESS`)
+- **Facilitator pays**: ~0.0001 ETH gas (~$0.02 at typical Base gas prices)
+- **Merchant receives**: 1 USDC on the destination chain configured by `MERCHANT_ASSET_OUT`
+
+Total cost: roughly **$1.10** per test.
 
 ## 7. Programmatic client (src/client/)
 

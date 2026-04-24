@@ -14,31 +14,31 @@
 
 | File | Tests | Duration | Description |
 |------|------:|----------|-------------|
-| `src/store.test.ts` | 61 | 329ms | InMemoryStateStore CRUD, concurrency, TTL, listByPhase, `listExpired` phase-filter |
-| `src/settler.test.ts` | 45 | 244ms | Broadcast, polling, settlement, timeout, deposit-notify, **recovery** (deterministic via `tasks[]` — no real-timer sleeps) |
-| `src/quote-engine.test.ts` | 45 | 21ms | 1CS quote translation to x402 PaymentRequirements, recipient/asset diagnosis, error-context threading, `extra.crossChain` informational block |
-| `src/verifier.test.ts` | 34 | 202ms | EIP-712 signature verification (EIP-3009 + Permit2) |
-| `src/chain-prefixes.test.ts` | 29 | 8ms | NEP-141 chain prefix extraction, NEAR account format (implicit + named), OMFT vs NEAR-native, list invariants |
-| `src/ownership-proof.test.ts` | 28 | 60ms | x402scan canonical message, URL normalisation, EIP-191 sign/recover round-trip, startup validation |
-| `src/config.test.ts` | 27 | 53ms | Zod schema validation, env var parsing, CORS allowlist parsing, recipient-format warnings, discovery env vars |
-| `src/rate-limiter.test.ts` | 25 | 149ms | Per-IP quote rate limiting, settlement limiter, quote GC (never deletes in-flight) |
-| `src/openapi.test.ts` | 27 | 48ms | OpenAPI 3.1 document structure, `x-payment-info`, `x-discovery`, `x-crosschain` + `CrossChainQuoteExtra` schema, x402 security scheme, per-operation responses |
+| `src/storage/store.test.ts` | 61 | 329ms | InMemoryStateStore CRUD, concurrency, TTL, listByPhase, `listExpired` phase-filter |
+| `src/payment/settler.test.ts` | 45 | 244ms | Broadcast, polling, settlement, timeout, deposit-notify, **recovery** (deterministic via `tasks[]` — no real-timer sleeps) |
+| `src/payment/quote-engine.test.ts` | 45 | 21ms | 1CS quote translation to x402 PaymentRequirements, recipient/asset diagnosis, error-context threading, `extra.crossChain` informational block |
+| `src/payment/verifier.test.ts` | 34 | 202ms | EIP-712 signature verification (EIP-3009 + Permit2) |
+| `src/payment/chain-prefixes.test.ts` | 29 | 8ms | NEP-141 chain prefix extraction, NEAR account format (implicit + named), OMFT vs NEAR-native, list invariants |
+| `src/http/ownership-proof.test.ts` | 28 | 60ms | x402scan canonical message, URL normalisation, EIP-191 sign/recover round-trip, startup validation |
+| `src/infra/config.test.ts` | 27 | 53ms | Zod schema validation, env var parsing, CORS allowlist parsing, recipient-format warnings, discovery env vars |
+| `src/infra/rate-limiter.test.ts` | 25 | 149ms | Per-IP quote rate limiting, settlement limiter, quote GC (never deletes in-flight) |
+| `src/http/openapi.test.ts` | 27 | 48ms | OpenAPI 3.1 document structure, `x-payment-info`, `x-discovery`, `x-crosschain` + `CrossChainQuoteExtra` schema, x402 security scheme, per-operation responses |
 | `src/types.test.ts` | 21 | 32ms | Type guards, CAIP-2 parsing, error classes |
-| `src/protected-routes.test.ts` | 21 | 17ms | Route shape validation, pricing modes, factory binding, invocability invariants |
-| `src/middleware.test.ts` | 19 | 156ms | Express middleware request/response handling + client-facing error sanitization + correlation IDs + server-side context logging |
+| `src/http/protected-routes.test.ts` | 21 | 17ms | Route shape validation, pricing modes, factory binding, invocability invariants |
+| `src/http/middleware.test.ts` | 19 | 156ms | Express middleware request/response handling + client-facing error sanitization + correlation IDs + server-side context logging |
 | `src/client/x402-client.test.ts` | 18 | 220ms | Full x402 client protocol against mocked gateway |
-| `src/discovery.test.ts` | 14 | 68ms | `/.well-known/x402` document shape, absolute URL joining, proof filtering |
+| `src/http/discovery.test.ts` | 14 | 68ms | `/.well-known/x402` document shape, absolute URL joining, proof filtering |
 | `src/e2e.test.ts` | 14 | 239ms | HTTP protocol compliance (402 -> sign -> 200) |
 | `src/mocks/integration.test.ts` | 14 | 161ms | Multi-chain parametrized flow (NEAR, Arbitrum, Ethereum, Polygon, Stellar, Solana) |
 | `src/client/signer.test.ts` | 12 | 37ms | EIP-3009 and Permit2 signing, chain ID extraction |
-| `src/provider-pool.test.ts` | 11 | 26ms | RPC provider rotation and failover |
+| `src/infra/provider-pool.test.ts` | 11 | 26ms | RPC provider rotation and failover |
 | `src/server.test.ts` | 9 | 62ms | CORS preflight, header exposure, origin allowlist enforcement, discovery endpoints (well-known + OpenAPI) |
 
 ### Performance Notes
 
 - Total collection time: ~13s (TypeScript transform + module resolution)
 - Actual test execution: ~2.3s for 474 tests (~4.9ms per test average)
-- Slowest file: `src/store.test.ts` (329ms) — SQLite init dominates. `src/settler.test.ts` dropped from ~610ms to 244ms after Tranche E removed two `setTimeout(r, 200)` real-timer sleeps in favour of awaiting `recoverInFlightSettlements`'s returned `tasks[]` directly.
+- Slowest file: `src/storage/store.test.ts` (329ms) — SQLite init dominates. `src/payment/settler.test.ts` dropped from ~610ms to 244ms after Tranche E removed two `setTimeout(r, 200)` real-timer sleeps in favour of awaiting `recoverInFlightSettlements`'s returned `tasks[]` directly.
 - All tests run in-process with mocked external dependencies (no network, no RPC)
 
 ---

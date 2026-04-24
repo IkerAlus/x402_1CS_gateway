@@ -73,7 +73,7 @@
   - **B1a (skipped with rationale)**: `extractChainId` is duplicated between `verifier.ts` and `client/signer.ts`. Deduping would either require the buyer-side client to reach across into server-side `src/payment/chain-prefixes.ts` or create a new shared leaf for a 4-line helper. Neither wins; the two copies are byte-identical today and drift risk is modest.
   - **B2**: Deleted four confirmed-dead items — the `export { sleep as _sleep }` re-export in `settler.ts` (zero consumers), the `SettlementResult` type in `types.ts` and its orphan test (the settler returns `SettlementResponseRecord` directly; nothing in production ever consumed `SettlementResult`), and the `_confirmations` parameter on `createBroadcastFn` (no caller passed a 2nd arg). Kept `_resourceUrl` on `buildPaymentRequirements` — removing it would ripple through 5+ call-sites in the public API.
   - **B3**: Deleted five unused mock helpers from `src/mocks/` — `failingChainReader`, `zeroBalanceChainReader`, `zeroAllowanceChainReader` (`mock-chain-reader.ts`) and `mockTerminalStatus` (`mock-1cs-responses.ts`). No test imported any of them; each was a one-line wrapper around `mockChainReader({...})` that tests can spell inline.
-  - **C2**: DEPLOYMENT_GUIDE's stale "Project structure" tree (which listed pre-x402scan files) now points at `README.md`'s canonical tree. CLAUDE.local.md's file map stayed — it's a qualitatively richer 3-column table (purpose + key exports per file) designed for AI-agent onboarding.
+  - **C2**: `DEPLOYMENT_GUIDE.md` has since been deleted (2026-04-24) — it had drifted into an ~85% duplicate of the README. The one unique section (per-test cost estimate) folded into README § 6; all other content already lived in the README. CLAUDE.local.md's file map stayed — it's a qualitatively richer 3-column table (purpose + key exports per file) designed for AI-agent onboarding.
   - **C3**: Added a "**Status: Shipped — 2026-04-21**" banner at the top of `docs/X402SCAN_PLAN.md` noting that Phases 1-4 + 6-7 are complete and Phase 5 is deliberately deferred.
   - **C4**: Stripped stale references in source comments to non-existent docs — `@see Research plan §N`, `@see Implementation roadmap Step N.N`, `settler-implementation-plan.docx`, "Phase 0", "(Phase 1)" markers, and a handful of `— Phase N` decorations in `X402SCAN_PLAN.md` cross-references that had outlived their usefulness now that the work shipped. Body-comment `D-S1` / `D-M1` etc. labels stay — they still tag real design decisions.
   - `SettlementResult`'s deleted test took the total to **477** (466 mocked + 11 live). No other test counts moved.
@@ -253,7 +253,7 @@ Phase 3 — Production hardening (items 9-16)
 
 | Document | Path |
 |----------|------|
-| Deployment Guide | `docs/DEPLOYMENT_GUIDE.md` |
+| Setup & testing walkthrough | `README.md` (§§ 1–6) |
 | User Guide | `docs/USER_GUIDE.md` |
 | Test Results | `docs/TEST_RESULTS.md` |
 | Facilitator Key Guidance | `docs/Facilitator_keys_guidance.md` |

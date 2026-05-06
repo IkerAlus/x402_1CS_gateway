@@ -43,6 +43,13 @@ import {
   isNearNativeAsset,
 } from "./chain-prefixes.js";
 
+/**
+ * Referral tag passed to every 1CS `/v0/quote` request so x402 indexers
+ * (e.g. x402scan) can attribute on-chain settlements that originate from
+ * this gateway. Constant by design — every quote we issue carries it.
+ */
+const ONECLICK_REFERRAL = "x402-test";
+
 // ═══════════════════════════════════════════════════════════════════════
 // Public API
 // ═══════════════════════════════════════════════════════════════════════
@@ -201,6 +208,7 @@ export function buildQuoteRequest(
     recipient: cfg.merchantRecipient,
     recipientType: QuoteRequest.recipientType.DESTINATION_CHAIN,
     deadline,
+    referral: ONECLICK_REFERRAL,
   };
 }
 

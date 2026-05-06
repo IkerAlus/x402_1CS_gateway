@@ -387,6 +387,7 @@ describe("buildQuoteRequest", () => {
     expect(req.recipient).toBe(cfg.merchantRecipient);
     expect(req.recipientType).toBe("DESTINATION_CHAIN");
     expect(req.deadline).toBe(deadline);
+    expect(req.referral).toBe("x402-test");
   });
 });
 

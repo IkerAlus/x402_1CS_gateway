@@ -21,15 +21,12 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { InMemoryStateStore } from "../storage/store.js";
 import { verifyPayment } from "../payment/verifier.js";
-import { settlePayment } from "../payment/settler.js";
-import type { SwapState } from "../types.js";
+import { settlePayment, extractDestinationChain } from "../payment/settler.js";
+import type { SwapState, SwapRequestInput } from "../types.js";
 
-// Import all mocks from the centralized index
-import { extractDestinationChain } from "../payment/settler.js";
 import {
   mockFastPollConfig,
   mockPaymentRequirements,
-  mockQuoteResponse,
   signEIP3009Payload,
   signPermit2Payload,
   mockChainReader,
@@ -41,6 +38,8 @@ import {
   MOCK_TX_HASH,
   DESTINATION_PRESETS,
   buyerWallet,
+  mockSwapState,
+  mockSwapInputs,
 } from "./index.js";
 
 describe("Integration: full x402 flow with mocks", () => {
@@ -52,16 +51,10 @@ describe("Integration: full x402 flow with mocks", () => {
   });
 
   // ── Helper: simulate quote-engine creating the initial state ──────
-  async function simulateQuote(): Promise<SwapState> {
-    const now = Date.now();
-    const state: SwapState = {
-      depositAddress: MOCK_DEPOSIT_ADDRESS,
-      quoteResponse: mockQuoteResponse(),
-      paymentRequirements: mockPaymentRequirements(),
-      phase: "QUOTED",
-      createdAt: now,
-      updatedAt: now,
-    };
+  async function simulateQuote(
+    overrides: Partial<SwapState> = {},
+  ): Promise<SwapState> {
+    const state = mockSwapState(overrides);
     await store.create(MOCK_DEPOSIT_ADDRESS, state);
     return state;
   }
@@ -73,7 +66,7 @@ describe("Integration: full x402 flow with mocks", () => {
   describe("EIP-3009 — complete flow", () => {
     it("should succeed: quote → verify (real sig) → settle", async () => {
       // Step 1: Gateway quotes — creates QUOTED state
-      await simulateQuote();
+      const state = await simulateQuote();
 
       // Step 2: Buyer signs EIP-3009 authorization with real wallet
       const { payload } = await signEIP3009Payload(buyerWallet, {
@@ -123,8 +116,16 @@ describe("Integration: full x402 flow with mocks", () => {
       expect(response.payer?.toLowerCase()).toBe(BUYER_ADDRESS.toLowerCase());
       expect(response.extra?.settlementType).toBe("crosschain-1cs");
       expect(response.extra?.swapStatus).toBe("SUCCESS");
+      // The receipt's destinationChain comes from the buyer's swapInputs.
       expect(response.extra?.destinationChain).toBe(
-        extractDestinationChain(cfg.merchantAssetOut),
+        extractDestinationChain(state.swapInputs.destinationAsset),
+      );
+      // Receipt enrichment — operatorFee, slippage, formatted amounts
+      // (D14 → CrossChainSettlementExtra in the PAYMENT-RESPONSE header).
+      expect(response.extra?.operatorFee).toBeDefined();
+      expect(response.extra?.operatorFee?.bps).toBe(state.operatorMarginBps);
+      expect(response.extra?.destinationRecipient).toBe(
+        state.swapInputs.destinationAddress,
       );
 
       // Final state should be SETTLED
@@ -178,7 +179,7 @@ describe("Integration: full x402 flow with mocks", () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════
-  // EIP-3009 with multiple merchant destination chains
+  // Multi-chain destination — EIP-3009, parametrized by buyer destination
   // ═══════════════════════════════════════════════════════════════════
 
   describe.each([
@@ -190,25 +191,16 @@ describe("Integration: full x402 flow with mocks", () => {
     ["Solana (non-EVM)", DESTINATION_PRESETS.solana, "solana:mainnet"],
   ] as const)("EIP-3009 — %s destination", (_label, preset, expectedChain) => {
     it(`should report destinationChain = ${expectedChain}`, async () => {
-      const destCfg = mockFastPollConfig(preset);
-
-      const now = Date.now();
-      const state: SwapState = {
-        depositAddress: MOCK_DEPOSIT_ADDRESS,
-        quoteResponse: mockQuoteResponse(),
-        paymentRequirements: mockPaymentRequirements(),
-        phase: "QUOTED",
-        createdAt: now,
-        updatedAt: now,
-      };
-      await store.create(MOCK_DEPOSIT_ADDRESS, state);
+      // Build a buyer-supplied input from the preset.
+      const inputs: SwapRequestInput = mockSwapInputs(preset);
+      await store.create(MOCK_DEPOSIT_ADDRESS, mockSwapState({ swapInputs: inputs }));
 
       const { payload } = await signEIP3009Payload(buyerWallet, {
         to: MOCK_DEPOSIT_ADDRESS,
       });
 
       const chainReader = mockChainReader();
-      await verifyPayment(payload, store, chainReader, destCfg, {
+      await verifyPayment(payload, store, chainReader, cfg, {
         skipOnChainChecks: true,
       });
 
@@ -218,12 +210,13 @@ describe("Integration: full x402 flow with mocks", () => {
         mockBroadcastFn(),
         mockDepositNotifyFn(),
         mockStatusPollFn(),
-        destCfg,
+        cfg,
       );
 
       expect(response.success).toBe(true);
       expect(response.extra?.destinationChain).toBe(expectedChain);
-      expect(response.extra?.destinationAsset).toBe(preset.merchantAssetOut);
+      expect(response.extra?.destinationAsset).toBe(preset.destinationAsset);
+      expect(response.extra?.destinationRecipient).toBe(preset.destinationAddress);
     });
   });
 
@@ -242,16 +235,10 @@ describe("Integration: full x402 flow with mocks", () => {
         },
       });
 
-      const now = Date.now();
-      const state: SwapState = {
-        depositAddress: MOCK_DEPOSIT_ADDRESS,
-        quoteResponse: mockQuoteResponse(),
-        paymentRequirements: permit2Requirements,
-        phase: "QUOTED",
-        createdAt: now,
-        updatedAt: now,
-      };
-      await store.create(MOCK_DEPOSIT_ADDRESS, state);
+      await store.create(
+        MOCK_DEPOSIT_ADDRESS,
+        mockSwapState({ paymentRequirements: permit2Requirements }),
+      );
 
       // Buyer signs Permit2 authorization
       const { payload } = await signPermit2Payload(buyerWallet, {
@@ -274,16 +261,12 @@ describe("Integration: full x402 flow with mocks", () => {
       );
 
       // Settle
-      const broadcast = mockBroadcastFn();
-      const notify = mockDepositNotifyFn();
-      const poll = mockStatusPollFn();
-
       const response = await settlePayment(
         MOCK_DEPOSIT_ADDRESS,
         store,
-        broadcast,
-        notify,
-        poll,
+        mockBroadcastFn(),
+        mockDepositNotifyFn(),
+        mockStatusPollFn(),
         cfg,
       );
 
@@ -300,11 +283,11 @@ describe("Integration: full x402 flow with mocks", () => {
     it("should reject verification if buyer signs wrong deposit address", async () => {
       await simulateQuote();
 
-      // Sign to a DIFFERENT address than the stored payTo.
-      // The verifier looks up state by accepted.payTo, so a wrong address
-      // results in "state not found" — which is the correct x402 behavior:
-      // the buyer can't trick the gateway into accepting payment for a
-      // different deposit address.
+      // Sign to a DIFFERENT address than the stored payTo. The verifier
+      // looks up state by accepted.payTo, so a wrong address results in
+      // "state not found" — which is the correct x402 behavior: the buyer
+      // can't trick the gateway into accepting payment for a different
+      // deposit address.
       const wrongAddress = "0x0000000000000000000000000000000000000001";
       const { payload } = await signEIP3009Payload(buyerWallet, {
         to: wrongAddress,
@@ -330,7 +313,7 @@ describe("Integration: full x402 flow with mocks", () => {
       // Sign with insufficient amount
       const { payload } = await signEIP3009Payload(buyerWallet, {
         to: MOCK_DEPOSIT_ADDRESS,
-        value: "1000",  // Way below the 10,500,000 required
+        value: "1000", // Way below the 10,500,000 required
         requirements: { amount: "1000" },
       });
 
@@ -348,7 +331,6 @@ describe("Integration: full x402 flow with mocks", () => {
     });
 
     it("should handle already-settled idempotency", async () => {
-      // First pass: full flow
       await simulateQuote();
 
       const { payload } = await signEIP3009Payload(buyerWallet, {
@@ -360,16 +342,12 @@ describe("Integration: full x402 flow with mocks", () => {
         skipOnChainChecks: true,
       });
 
-      const broadcast = mockBroadcastFn();
-      const notify = mockDepositNotifyFn();
-      const poll = mockStatusPollFn();
-
       const firstResponse = await settlePayment(
         MOCK_DEPOSIT_ADDRESS,
         store,
-        broadcast,
-        notify,
-        poll,
+        mockBroadcastFn(),
+        mockDepositNotifyFn(),
+        mockStatusPollFn(),
         cfg,
       );
 
@@ -402,11 +380,16 @@ describe("Integration: full x402 flow with mocks", () => {
       const broadcast = mockBroadcastFn({
         eip3009Error: new Error("execution reverted: nonce already used"),
       });
-      const notify = mockDepositNotifyFn();
-      const poll = mockStatusPollFn();
 
       await expect(
-        settlePayment(MOCK_DEPOSIT_ADDRESS, store, broadcast, notify, poll, cfg),
+        settlePayment(
+          MOCK_DEPOSIT_ADDRESS,
+          store,
+          broadcast,
+          mockDepositNotifyFn(),
+          mockStatusPollFn(),
+          cfg,
+        ),
       ).rejects.toThrow("Broadcast failed");
 
       // State should be FAILED

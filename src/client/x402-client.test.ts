@@ -40,11 +40,28 @@ import {
   BUYER_ADDRESS,
   MOCK_DEPOSIT_ADDRESS,
   MOCK_TX_HASH,
+  mockSwapInputs,
+  mockProtectedRoute,
 } from "../mocks/index.js";
+import type { SwapRequestInput } from "../types.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Test server helpers
 // ═══════════════════════════════════════════════════════════════════════
+
+const SWAP_PATH = "/api/swap";
+
+/** Buyer's destination params used by every test that targets /api/swap. */
+function swapQuery(inputs: SwapRequestInput = mockSwapInputs()): Record<string, string> {
+  const out: Record<string, string> = {
+    destinationChain: inputs.destinationChain,
+    destinationAsset: inputs.destinationAsset,
+    destinationAddress: inputs.destinationAddress,
+    amountIn: inputs.amountIn,
+  };
+  if (inputs.refundAddress) out.refundAddress = inputs.refundAddress;
+  return out;
+}
 
 function createMockQuoteFn(): QuoteFn {
   return async () => mockQuoteResponse() as unknown as QuoteResponse;
@@ -59,7 +76,8 @@ function buildDeps(overrides: Partial<MiddlewareDeps> = {}): MiddlewareDeps {
     depositNotifyFn: mockDepositNotifyFn(),
     statusPollFn: mockStatusPollFn(),
     quoteFn: createMockQuoteFn(),
-    resourceDescription: "Test premium resource",
+    route: mockProtectedRoute(),
+    resourceDescription: "Test swap resource",
     ...overrides,
   };
 }
@@ -68,10 +86,11 @@ function createTestGateway(deps: MiddlewareDeps): express.Express {
   const app = express();
   app.use(express.json());
   app.get(
-    "/api/premium",
+    SWAP_PATH,
     createX402Middleware(deps),
     (_req, res) => {
-      res.json({ content: "premium data", timestamp: Date.now() });
+      // Body is `{}` by design (D14 — receipt is in the PAYMENT-RESPONSE header).
+      res.json({});
     },
   );
   app.get("/api/free", (_req, res) => {
@@ -121,7 +140,7 @@ describe("X402Client", () => {
       const { client, close } = await startTestServer();
 
       try {
-        const result = await client.requestResource("/api/premium");
+        const result = await client.requestResource("/api/swap", { query: swapQuery() });
 
         expect(result.kind).toBe("payment-required");
         if (result.kind !== "payment-required") return; // type guard
@@ -230,19 +249,19 @@ describe("X402Client", () => {
 
       try {
         // First get the 402 so the state store is populated
-        const reqResult = await client.requestResource("/api/premium");
+        const reqResult = await client.requestResource("/api/swap", { query: swapQuery() });
         expect(reqResult.kind).toBe("payment-required");
         if (reqResult.kind !== "payment-required") return;
 
         const requirements = reqResult.paymentRequired.accepts[0]!;
         const payload = await client.signPayment(buyerWallet, requirements);
-        const result = await client.submitPayment("/api/premium", payload);
+        const result = await client.submitPayment("/api/swap", payload, { query: swapQuery() });
 
         expect(result.success).toBe(true);
         if (!result.success) return;
 
         expect(result.status).toBe(200);
-        expect(result.body).toHaveProperty("content", "premium data");
+        expect(result.body).toEqual({});
         expect(result.paymentResponse.success).toBe(true);
         expect(result.paymentResponse.transaction).toBe(MOCK_TX_HASH);
         expect(result.paymentResponse.payer?.toLowerCase()).toBe(
@@ -261,12 +280,12 @@ describe("X402Client", () => {
       });
 
       try {
-        const reqResult = await client.requestResource("/api/premium");
+        const reqResult = await client.requestResource("/api/swap", { query: swapQuery() });
         if (reqResult.status !== 402) return;
 
         const requirements = reqResult.paymentRequired.accepts[0]!;
         const payload = await client.signPayment(buyerWallet, requirements);
-        const result = await client.submitPayment("/api/premium", payload);
+        const result = await client.submitPayment("/api/swap", payload, { query: swapQuery() });
 
         expect(result.success).toBe(false);
         if (result.success) return;
@@ -286,13 +305,13 @@ describe("X402Client", () => {
       const { client, close } = await startTestServer();
 
       try {
-        const result = await client.payAndFetch(buyerWallet, "/api/premium");
+        const result = await client.payAndFetch(buyerWallet, "/api/swap", { query: swapQuery() });
 
         expect(result.success).toBe(true);
         if (!result.success) return;
 
         // Resource body
-        expect(result.body).toHaveProperty("content", "premium data");
+        expect(result.body).toEqual({});
 
         // Settlement receipt
         expect(result.paymentResponse.success).toBe(true);
@@ -321,83 +340,49 @@ describe("X402Client", () => {
       });
 
       try {
-        const result = await client.payAndFetch(buyerWallet, "/api/premium");
+        const result = await client.payAndFetch(buyerWallet, "/api/swap", { query: swapQuery() });
 
         expect(result.success).toBe(true);
         if (!result.success) return;
-        expect(result.body).toHaveProperty("content", "premium data");
+        expect(result.body).toEqual({});
         expect(result.paymentResponse.success).toBe(true);
       } finally {
         await close();
       }
     });
 
-    it("propagates swap failure as unsuccessful result", async () => {
-      const { client, close } = await startTestServer({
-        statusPollFn: mockStatusPollFn({
-          sequence: mockFailedStatusSequence(),
-        }),
-      });
-
+    // The client just propagates `{success: false, error, status}` for any
+    // failure mode the gateway returns. The gateway's per-failure status
+    // codes are tested in middleware.test.ts; here we only confirm the
+    // client's propagation contract across a representative sample.
+    it.each([
+      [
+        "1CS swap reaches FAILED → 502",
+        { statusPollFn: mockStatusPollFn({ sequence: mockFailedStatusSequence() }) },
+        502,
+      ],
+      [
+        "buyer has insufficient on-chain balance → 402 with verification error",
+        { chainReader: mockChainReader({ tokenBalance: 0n }) },
+        402,
+      ],
+      [
+        "facilitator out of gas → 503",
+        { broadcastFn: mockBroadcastFn({ facilitatorBalance: 0n }) },
+        503,
+      ],
+      [
+        "nonce already used → 409",
+        { broadcastFn: mockBroadcastFn({ nonceAlreadyUsed: true }) },
+        409,
+      ],
+    ] as const)("propagates failure when %s", async (_label, depsOverrides, expectedStatus) => {
+      const { client, close } = await startTestServer(depsOverrides);
       try {
-        const result = await client.payAndFetch(buyerWallet, "/api/premium");
-
+        const result = await client.payAndFetch(buyerWallet, "/api/swap", { query: swapQuery() });
         expect(result.success).toBe(false);
-        if (result.success) return;
-
-        expect(result.status).toBe(502);
-        expect(result.paymentResponse?.success).toBe(false);
-        expect(result.paymentRequired).toBeDefined();
-      } finally {
-        await close();
-      }
-    });
-
-    it("returns error for insufficient balance", async () => {
-      const { client, close } = await startTestServer({
-        chainReader: mockChainReader({ tokenBalance: 0n }),
-      });
-
-      try {
-        const result = await client.payAndFetch(buyerWallet, "/api/premium");
-
-        // Gateway returns 402 with an error when balance check fails
-        expect(result.success).toBe(false);
-        if (result.success) return;
-        expect(result.status).toBe(402);
-        expect(result.error).toContain("Insufficient token balance");
-      } finally {
-        await close();
-      }
-    });
-
-    it("returns error for insufficient gas", async () => {
-      const { client, close } = await startTestServer({
-        broadcastFn: mockBroadcastFn({ facilitatorBalance: 0n }),
-      });
-
-      try {
-        const result = await client.payAndFetch(buyerWallet, "/api/premium");
-
-        expect(result.success).toBe(false);
-        if (result.success) return;
-        expect(result.status).toBe(503);
-      } finally {
-        await close();
-      }
-    });
-
-    it("returns error for nonce replay", async () => {
-      const { client, close } = await startTestServer({
-        broadcastFn: mockBroadcastFn({ nonceAlreadyUsed: true }),
-      });
-
-      try {
-        const result = await client.payAndFetch(buyerWallet, "/api/premium");
-
-        expect(result.success).toBe(false);
-        if (result.success) return;
-        expect(result.status).toBe(409);
+        if (result.success) return; // type narrowing
+        expect(result.status).toBe(expectedStatus);
       } finally {
         await close();
       }
@@ -464,45 +449,23 @@ describe("X402Client", () => {
       expect(result.error).toContain("500");
     });
 
-    it("handles 402 with missing PAYMENT-REQUIRED header", async () => {
-      const mockFetch: typeof globalThis.fetch = async () => {
-        return new Response("{}", {
-          status: 402,
-          headers: { "Content-Type": "application/json" },
+    it("handles a 402 with missing or malformed PAYMENT-REQUIRED header gracefully", async () => {
+      // Both failures must produce a kind: "error" result instead of
+      // crashing — the client should never throw on a bad gateway response.
+      const buildClient = (headers: Record<string, string>) =>
+        new X402Client({
+          gatewayUrl: "http://fake.test",
+          fetch: async () =>
+            new Response("{}", { status: 402, headers: { "Content-Type": "application/json", ...headers } }),
         });
-      };
 
-      const client = new X402Client({
-        gatewayUrl: "http://fake.test",
-        fetch: mockFetch,
-      });
+      const missing = await buildClient({}).requestResource("/test");
+      expect(missing.kind).toBe("error");
+      if (missing.kind === "error") expect(missing.error).toContain("missing PAYMENT-REQUIRED");
 
-      const result = await client.requestResource("/test");
-      expect(result.kind).toBe("error");
-      if (result.kind !== "error") return;
-      expect(result.error).toContain("missing PAYMENT-REQUIRED");
-    });
-
-    it("handles malformed base64 in PAYMENT-REQUIRED header", async () => {
-      const mockFetch: typeof globalThis.fetch = async () => {
-        return new Response("{}", {
-          status: 402,
-          headers: {
-            "Content-Type": "application/json",
-            "payment-required": "not-valid-base64!!!",
-          },
-        });
-      };
-
-      const client = new X402Client({
-        gatewayUrl: "http://fake.test",
-        fetch: mockFetch,
-      });
-
-      const result = await client.requestResource("/test");
-      expect(result.kind).toBe("error");
-      if (result.kind !== "error") return;
-      expect(result.error).toContain("Failed to decode");
+      const malformed = await buildClient({ "payment-required": "not-valid-base64!!!" }).requestResource("/test");
+      expect(malformed.kind).toBe("error");
+      if (malformed.kind === "error") expect(malformed.error).toContain("Failed to decode");
     });
   });
 });

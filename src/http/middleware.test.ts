@@ -31,13 +31,35 @@ import {
   BUYER_ADDRESS,
   signEIP3009Payload,
   mockPaymentRequirements,
+  mockSwapInputs,
+  mockProtectedRoute,
+  mockSwapState,
 } from "../mocks/index.js";
 import type { QuoteFn } from "../payment/quote-engine.js";
-import type { QuoteResponse } from "../types.js";
+import type { QuoteResponse, SwapRequestInput } from "../types.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Test helpers
 // ═══════════════════════════════════════════════════════════════════════
+
+const SWAP_PATH = "/api/swap";
+
+/** Build the buyer's query string for the swap route from a SwapRequestInput. */
+function swapQuery(inputs: SwapRequestInput = mockSwapInputs()): Record<string, string> {
+  const out: Record<string, string> = {
+    destinationChain: inputs.destinationChain,
+    destinationAsset: inputs.destinationAsset,
+    destinationAddress: inputs.destinationAddress,
+    amountIn: inputs.amountIn,
+  };
+  if (inputs.refundAddress) out.refundAddress = inputs.refundAddress;
+  return out;
+}
+
+/** Send a GET to /api/swap with the buyer's destination query attached. */
+function getSwap(app: express.Express, query: Record<string, string> = swapQuery()) {
+  return request(app).get(SWAP_PATH).query(query);
+}
 
 /** Create a mock QuoteFn that returns a predictable quote. */
 function createMockQuoteFn(): QuoteFn {
@@ -55,6 +77,7 @@ function buildDeps(overrides: Partial<MiddlewareDeps> = {}): MiddlewareDeps {
     depositNotifyFn: mockDepositNotifyFn(),
     statusPollFn: mockStatusPollFn(),
     quoteFn: createMockQuoteFn(),
+    route: mockProtectedRoute(),
     ...overrides,
   };
 }
@@ -63,8 +86,8 @@ function buildDeps(overrides: Partial<MiddlewareDeps> = {}): MiddlewareDeps {
 function createTestApp(deps: MiddlewareDeps): express.Express {
   const app = express();
   app.use(express.json());
-  app.get("/api/premium", createX402Middleware(deps), (_req, res) => {
-    res.json({ content: "premium data" });
+  app.get(SWAP_PATH, createX402Middleware(deps), (_req, res) => {
+    res.json({});
   });
   return app;
 }
@@ -86,7 +109,7 @@ describe("x402 Middleware", () => {
 
   describe("No PAYMENT-SIGNATURE header", () => {
     it("returns 402 with PAYMENT-REQUIRED header", async () => {
-      const res = await request(app).get("/api/premium");
+      const res = await getSwap(app);
 
       expect(res.status).toBe(402);
       expect(res.headers["payment-required"]).toBeDefined();
@@ -102,7 +125,7 @@ describe("x402 Middleware", () => {
     });
 
     it("returns empty JSON body", async () => {
-      const res = await request(app).get("/api/premium");
+      const res = await getSwap(app);
       expect(res.body).toEqual({});
     });
 
@@ -110,11 +133,13 @@ describe("x402 Middleware", () => {
       const depsWithDesc = buildDeps({ resourceDescription: "Premium API access" });
       const appWithDesc = createTestApp(depsWithDesc);
 
-      const res = await request(appWithDesc).get("/api/premium");
+      const res = await getSwap(appWithDesc);
       const paymentRequired = decodePaymentRequiredHeader(
         res.headers["payment-required"],
       );
-      expect(paymentRequired.resource.url).toBe("/api/premium");
+      // Express's `originalUrl` includes the buyer's query string (it's the
+      // raw request line). The resource URL on the 402 envelope reflects that.
+      expect(paymentRequired.resource.url).toMatch(/^\/api\/swap\?/);
       expect(paymentRequired.resource.description).toBe("Premium API access");
     });
   });
@@ -124,7 +149,7 @@ describe("x402 Middleware", () => {
   describe("Invalid PAYMENT-SIGNATURE header", () => {
     it("returns 400 for malformed base64", async () => {
       const res = await request(app)
-        .get("/api/premium")
+        .get("/api/swap")
         .set("PAYMENT-SIGNATURE", "not-valid-base64!!!");
 
       expect(res.status).toBe(400);
@@ -137,7 +162,7 @@ describe("x402 Middleware", () => {
       const encoded = encodePaymentSignatureHeader(badPayload as any);
 
       const res = await request(app)
-        .get("/api/premium")
+        .get("/api/swap")
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(res.status).toBe(400);
@@ -160,8 +185,11 @@ describe("x402 Middleware", () => {
       };
       const encoded = encodePaymentSignatureHeader(payload as any);
 
+      // Re-quote on the retry needs the buyer's query (the middleware
+      // re-parses inputs to build the fresh 402).
       const res = await request(app)
-        .get("/api/premium")
+        .get("/api/swap")
+        .query(swapQuery())
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(res.status).toBe(402);
@@ -175,17 +203,16 @@ describe("x402 Middleware", () => {
     it("deletes stale state and returns fresh 402", async () => {
       // Seed the store with an expired state
       const now = Date.now();
+      const baseState = mockSwapState();
       const expiredState: SwapState = {
-        depositAddress: MOCK_DEPOSIT_ADDRESS,
+        ...baseState,
         quoteResponse: {
-          ...mockQuoteResponse(),
+          ...baseState.quoteResponse,
           quote: {
-            ...mockQuoteResponse().quote,
+            ...baseState.quoteResponse.quote,
             deadline: new Date(now - 60_000).toISOString(), // expired 1 min ago
           },
         },
-        paymentRequirements: mockPaymentRequirements(),
-        phase: "QUOTED",
         createdAt: now - 120_000,
         updatedAt: now - 120_000,
       };
@@ -199,7 +226,8 @@ describe("x402 Middleware", () => {
       const encoded = encodePaymentSignatureHeader(payload as any);
 
       const res = await request(app)
-        .get("/api/premium")
+        .get("/api/swap")
+        .query(swapQuery())
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(res.status).toBe(402);
@@ -217,26 +245,10 @@ describe("x402 Middleware", () => {
     it("returns 200 with cached PAYMENT-RESPONSE", async () => {
       // Seed a SETTLED state
       const now = Date.now();
-      const settledState: SwapState = {
-        depositAddress: MOCK_DEPOSIT_ADDRESS,
-        quoteResponse: {
-          ...mockQuoteResponse(),
-          quote: {
-            ...mockQuoteResponse().quote,
-            deadline: new Date(now + 300_000).toISOString(),
-          },
-        },
-        paymentRequirements: mockPaymentRequirements(),
-        paymentPayload: {
-          x402Version: 2,
-          accepted: mockPaymentRequirements(),
-          payload: {},
-        },
+      const settledState: SwapState = mockSwapState({
+        phase: "SETTLED",
         signerAddress: BUYER_ADDRESS,
         originTxHash: MOCK_TX_HASH,
-        phase: "SETTLED",
-        createdAt: now - 10_000,
-        updatedAt: now,
         settledAt: now,
         settlementResponse: {
           success: true,
@@ -249,7 +261,7 @@ describe("x402 Middleware", () => {
             correlationId: "test-correlation-id",
           },
         },
-      };
+      });
       await deps.store.create(MOCK_DEPOSIT_ADDRESS, settledState);
 
       const payload: PaymentPayloadRecord = {
@@ -260,12 +272,14 @@ describe("x402 Middleware", () => {
       const encoded = encodePaymentSignatureHeader(payload as any);
 
       const res = await request(app)
-        .get("/api/premium")
+        .get("/api/swap")
+        .query(swapQuery())
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(res.status).toBe(200);
       expect(res.headers["payment-response"]).toBeDefined();
-      expect(res.body.content).toBe("premium data");
+      // Body is `{}` by design (D14 — receipt is in the PAYMENT-RESPONSE header).
+      expect(res.body).toEqual({});
 
       const paymentResponse = decodePaymentResponseHeader(
         res.headers["payment-response"],
@@ -279,21 +293,7 @@ describe("x402 Middleware", () => {
 
   describe("Payment for in-progress swap", () => {
     it("returns 409 when swap is already being settled", async () => {
-      const now = Date.now();
-      const inProgressState: SwapState = {
-        depositAddress: MOCK_DEPOSIT_ADDRESS,
-        quoteResponse: {
-          ...mockQuoteResponse(),
-          quote: {
-            ...mockQuoteResponse().quote,
-            deadline: new Date(now + 300_000).toISOString(),
-          },
-        },
-        paymentRequirements: mockPaymentRequirements(),
-        phase: "BROADCASTING",
-        createdAt: now - 5_000,
-        updatedAt: now,
-      };
+      const inProgressState = mockSwapState({ phase: "BROADCASTING" });
       await deps.store.create(MOCK_DEPOSIT_ADDRESS, inProgressState);
 
       const payload: PaymentPayloadRecord = {
@@ -304,7 +304,8 @@ describe("x402 Middleware", () => {
       const encoded = encodePaymentSignatureHeader(payload as any);
 
       const res = await request(app)
-        .get("/api/premium")
+        .get("/api/swap")
+        .query(swapQuery())
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(res.status).toBe(409);
@@ -317,7 +318,7 @@ describe("x402 Middleware", () => {
   describe("Full settlement flow", () => {
     it("completes EIP-3009 payment and returns 200 with PAYMENT-RESPONSE", async () => {
       // Step 1: First request → 402 (creates QUOTED state)
-      const initialRes = await request(app).get("/api/premium");
+      const initialRes = await getSwap(app);
       expect(initialRes.status).toBe(402);
 
       // Step 2: Decode the payment requirements from the 402
@@ -337,11 +338,13 @@ describe("x402 Middleware", () => {
       const encoded = encodePaymentSignatureHeader(signedPayload as any);
 
       const paymentRes = await request(app)
-        .get("/api/premium")
+        .get("/api/swap")
+        .query(swapQuery())
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(paymentRes.status).toBe(200);
-      expect(paymentRes.body.content).toBe("premium data");
+      // Body is `{}` by design (D14 — receipt is in the PAYMENT-RESPONSE header).
+      expect(paymentRes.body).toEqual({});
       expect(paymentRes.headers["payment-response"]).toBeDefined();
 
       const paymentResponse = decodePaymentResponseHeader(
@@ -365,7 +368,7 @@ describe("x402 Middleware", () => {
       const failApp = createTestApp(failDeps);
 
       // Step 1: Get 402
-      const initialRes = await request(failApp).get("/api/premium");
+      const initialRes = await getSwap(failApp);
       expect(initialRes.status).toBe(402);
 
       // Step 2: Decode requirements and sign
@@ -381,7 +384,8 @@ describe("x402 Middleware", () => {
       // Step 3: Send the signed payment (should fail during broadcast)
       const encoded = encodePaymentSignatureHeader(signedPayload as any);
       const paymentRes = await request(failApp)
-        .get("/api/premium")
+        .get("/api/swap")
+        .query(swapQuery())
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(paymentRes.status).toBe(502);
@@ -404,7 +408,7 @@ describe("x402 Middleware", () => {
       const failDeps = buildDeps({ quoteFn: failQuoteFn });
       const failApp = createTestApp(failDeps);
 
-      const res = await request(failApp).get("/api/premium");
+      const res = await getSwap(failApp);
       expect(res.status).toBe(503);
     });
   });
@@ -432,7 +436,7 @@ describe("x402 Middleware", () => {
       };
       const failApp = createTestApp(buildDeps({ quoteFn: failQuoteFn }));
 
-      const res = await request(failApp).get("/api/premium");
+      const res = await getSwap(failApp);
 
       expect(res.status).toBe(503);
       expect(res.body.error).toBe("SERVICE_UNAVAILABLE");
@@ -462,7 +466,7 @@ describe("x402 Middleware", () => {
       const failApp = createTestApp(buildDeps({ broadcastFn: leakyBroadcast }));
 
       // Get 402, sign, send
-      const initial = await request(failApp).get("/api/premium");
+      const initial = await getSwap(failApp);
       const requirements = decodePaymentRequiredHeader(
         initial.headers["payment-required"],
       ).accepts[0];
@@ -473,7 +477,7 @@ describe("x402 Middleware", () => {
       const encoded = encodePaymentSignatureHeader(payload as any);
 
       const res = await request(failApp)
-        .get("/api/premium")
+        .get("/api/swap")
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(res.status).toBe(503);
@@ -512,7 +516,7 @@ describe("x402 Middleware", () => {
       const encoded = encodePaymentSignatureHeader(payload as any);
 
       const res = await request(failApp)
-        .get("/api/premium")
+        .get("/api/swap")
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(res.status).toBe(500);
@@ -539,7 +543,7 @@ describe("x402 Middleware", () => {
       });
       const failApp = createTestApp(buildDeps({ broadcastFn: leakyBroadcast }));
 
-      const initial = await request(failApp).get("/api/premium");
+      const initial = await getSwap(failApp);
       const requirements = decodePaymentRequiredHeader(
         initial.headers["payment-required"],
       ).accepts[0];
@@ -550,7 +554,7 @@ describe("x402 Middleware", () => {
       const encoded = encodePaymentSignatureHeader(payload as any);
 
       const res = await request(failApp)
-        .get("/api/premium")
+        .get("/api/swap")
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(res.status).toBe(502);
@@ -583,8 +587,8 @@ describe("x402 Middleware", () => {
       };
       const failApp = createTestApp(buildDeps({ quoteFn: failQuoteFn }));
 
-      const r1 = await request(failApp).get("/api/premium");
-      const r2 = await request(failApp).get("/api/premium");
+      const r1 = await getSwap(failApp);
+      const r2 = await getSwap(failApp);
       expect(r1.body.correlationId).toMatch(/^[0-9a-f]{8}$/);
       expect(r2.body.correlationId).toMatch(/^[0-9a-f]{8}$/);
       expect(r1.body.correlationId).not.toBe(r2.body.correlationId);
@@ -612,7 +616,7 @@ describe("x402 Middleware", () => {
       };
       const failApp = createTestApp(buildDeps({ quoteFn: failQuoteFn }));
 
-      const res = await request(failApp).get("/api/premium");
+      const res = await getSwap(failApp);
 
       // Client response still sanitized (H2 invariant).
       expect(res.status).toBe(503);
@@ -638,7 +642,7 @@ describe("x402 Middleware", () => {
       };
       const failApp = createTestApp(buildDeps({ quoteFn: failQuoteFn }));
 
-      const res = await request(failApp).get("/api/premium");
+      const res = await getSwap(failApp);
 
       expect(res.status).toBe(503);
       const logged = consoleErrorSpy.mock.calls.map((c) => String(c[0])).join("\n");

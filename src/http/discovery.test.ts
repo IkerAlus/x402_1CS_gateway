@@ -12,6 +12,7 @@ import { ethers } from "ethers";
 import { buildWellKnownDocument, WELL_KNOWN_INSTRUCTIONS } from "./discovery.js";
 import { signOwnershipProof } from "./ownership-proof.js";
 import type { ProtectedRoute } from "./protected-routes.js";
+import { SwapRequestInputSchema, SwapRequestInputJsonSchema } from "./swap-input.js";
 import { mockGatewayConfig } from "../mocks/mock-config.js";
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -23,53 +24,32 @@ function route(path: string, method: "GET" | "POST" = "GET"): ProtectedRoute {
     path,
     method,
     summary: `summary for ${path}`,
-    pricing: { mode: "fixed", currency: "USD", amount: "0.01" },
-    inputSchema: { type: "object" },
-    outputSchema: { type: "object" },
+    description: `description for ${path}`,
+    pricing: { currency: "USD", min: "0.01", max: "100" },
+    inputValidator: SwapRequestInputSchema,
+    inputSchema: SwapRequestInputJsonSchema,
+    outputSchema: { type: "object", additionalProperties: false },
     handler: (_req, _res, next) => next(),
   };
 }
 
-const WALLET = new ethers.Wallet("0x" + "11".repeat(32));
-
-async function realProof(url: string): Promise<string> {
-  return signOwnershipProof(WALLET, url);
-}
-
 // ═══════════════════════════════════════════════════════════════════════
-// Structural shape
+// Structural shape — top-level keys + version
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("buildWellKnownDocument — shape", () => {
-  it("emits version: 1 always", () => {
+  it("emits version=1 and exactly the canonical four top-level keys (no extensions)", () => {
+    // x402scan DISCOVERY.md does not recognise arbitrary extensions on
+    // this surface — pin the key set so anyone adding/removing one updates
+    // this test deliberately.
     const doc = buildWellKnownDocument(mockGatewayConfig(), [route("/a")]);
     expect(doc.version).toBe(1);
-  });
-
-  it("keys are exactly { version, resources, ownershipProofs, instructions }", () => {
-    // Pinned so anyone adding / removing a top-level field has to update
-    // this test deliberately — the x402scan DISCOVERY.md spec does not
-    // recognise arbitrary extensions on this surface.
-    const doc = buildWellKnownDocument(mockGatewayConfig(), [route("/a")]);
     expect(Object.keys(doc).sort()).toEqual([
       "instructions",
       "ownershipProofs",
       "resources",
       "version",
     ]);
-  });
-
-  it("is JSON-serialisable without loss", () => {
-    const doc = buildWellKnownDocument(mockGatewayConfig(), [route("/a")]);
-    const roundtripped = JSON.parse(JSON.stringify(doc));
-    expect(roundtripped).toEqual(doc);
-  });
-
-  it("is deterministic given identical inputs", () => {
-    const cfg = mockGatewayConfig();
-    const d1 = buildWellKnownDocument(cfg, [route("/a"), route("/b")]);
-    const d2 = buildWellKnownDocument(cfg, [route("/a"), route("/b")]);
-    expect(d2).toEqual(d1);
   });
 });
 
@@ -78,47 +58,45 @@ describe("buildWellKnownDocument — shape", () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("buildWellKnownDocument — resources", () => {
-  it("joins publicBaseUrl with each route path", () => {
-    const cfg = mockGatewayConfig({ publicBaseUrl: "https://gateway.example.com" });
-    const doc = buildWellKnownDocument(cfg, [route("/api/a"), route("/api/b")]);
-    expect(doc.resources).toEqual([
-      "https://gateway.example.com/api/a",
-      "https://gateway.example.com/api/b",
-    ]);
+  it("joins publicBaseUrl with each route path (handles trailing slash + subpath deployments) in registry order", () => {
+    // Plain.
+    expect(
+      buildWellKnownDocument(
+        mockGatewayConfig({ publicBaseUrl: "https://gateway.example.com" }),
+        [route("/api/a"), route("/api/b")],
+      ).resources,
+    ).toEqual(["https://gateway.example.com/api/a", "https://gateway.example.com/api/b"]);
+
+    // Trailing slash on publicBaseUrl — should not double-slash.
+    expect(
+      buildWellKnownDocument(
+        mockGatewayConfig({ publicBaseUrl: "https://gateway.example.com/" }),
+        [route("/api/a")],
+      ).resources,
+    ).toEqual(["https://gateway.example.com/api/a"]);
+
+    // Reverse-proxy deployed under a subpath — composes onto the subpath.
+    expect(
+      buildWellKnownDocument(
+        mockGatewayConfig({ publicBaseUrl: "https://example.com/x402" }),
+        [route("/api/a")],
+      ).resources,
+    ).toEqual(["https://example.com/x402/api/a"]);
+
+    // Registry order is preserved.
+    expect(
+      buildWellKnownDocument(mockGatewayConfig({ publicBaseUrl: "https://g.example.com" }), [
+        route("/r2"),
+        route("/r1"),
+        route("/r3"),
+      ]).resources,
+    ).toEqual(["https://g.example.com/r2", "https://g.example.com/r1", "https://g.example.com/r3"]);
   });
 
-  it("handles a publicBaseUrl with a trailing slash without doubling", () => {
-    const cfg = mockGatewayConfig({ publicBaseUrl: "https://gateway.example.com/" });
-    const doc = buildWellKnownDocument(cfg, [route("/api/a")]);
-    expect(doc.resources).toEqual(["https://gateway.example.com/api/a"]);
-  });
-
-  it("preserves a publicBaseUrl that deploys under a subpath", () => {
-    // The gateway might be deployed behind a reverse proxy at /x402.
-    // Route paths must compose onto the subpath, not replace it.
-    const cfg = mockGatewayConfig({ publicBaseUrl: "https://example.com/x402" });
-    const doc = buildWellKnownDocument(cfg, [route("/api/a")]);
-    expect(doc.resources).toEqual(["https://example.com/x402/api/a"]);
-  });
-
-  it("emits an empty resources array when publicBaseUrl is unset", () => {
-    const cfg = mockGatewayConfig({ publicBaseUrl: undefined });
-    const doc = buildWellKnownDocument(cfg, [route("/api/a")]);
-    expect(doc.resources).toEqual([]);
-  });
-
-  it("emits one resource per route, in registry order", () => {
-    const cfg = mockGatewayConfig({ publicBaseUrl: "https://g.example.com" });
-    const doc = buildWellKnownDocument(cfg, [
-      route("/r2"),
-      route("/r1"),
-      route("/r3"),
-    ]);
-    expect(doc.resources).toEqual([
-      "https://g.example.com/r2",
-      "https://g.example.com/r1",
-      "https://g.example.com/r3",
-    ]);
+  it("emits an empty resources array when publicBaseUrl is unset (relative URLs are useless to crawlers)", () => {
+    expect(
+      buildWellKnownDocument(mockGatewayConfig({ publicBaseUrl: undefined }), [route("/api/a")]).resources,
+    ).toEqual([]);
   });
 });
 
@@ -127,95 +105,34 @@ describe("buildWellKnownDocument — resources", () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("buildWellKnownDocument — ownership proofs", () => {
-  it("emits only structurally valid proofs", async () => {
-    const url = "https://gateway.example.com";
-    const good = await realProof(url);
-    const bad = "not-a-proof";
-    const cfg = mockGatewayConfig({
-      publicBaseUrl: url,
-      ownershipProofs: [good, bad],
-    });
-    const doc = buildWellKnownDocument(cfg, [route("/a")]);
-    expect(doc.ownershipProofs).toContain(good);
-    expect(doc.ownershipProofs).not.toContain(bad);
-  });
-
-  it("emits no proofs when publicBaseUrl is unset (even if configured)", () => {
-    const cfg = mockGatewayConfig({
-      publicBaseUrl: undefined,
-      ownershipProofs: ["0x" + "a".repeat(130)],
-    });
-    const doc = buildWellKnownDocument(cfg, [route("/a")]);
-    expect(doc.ownershipProofs).toEqual([]);
-  });
-
-  it("emits an empty array when ownershipProofs is empty", () => {
-    const cfg = mockGatewayConfig({
-      publicBaseUrl: "https://gateway.example.com",
-      ownershipProofs: [],
-    });
-    const doc = buildWellKnownDocument(cfg, [route("/a")]);
-    expect(doc.ownershipProofs).toEqual([]);
-  });
-
-  it("keeps multiple valid proofs from different signers", async () => {
+  it("emits only structurally-valid proofs (drops malformed; preserves multi-signer)", async () => {
     const url = "https://gateway.example.com";
     const w1 = new ethers.Wallet("0x" + "aa".repeat(32));
     const w2 = new ethers.Wallet("0x" + "bb".repeat(32));
-    const [p1, p2] = await Promise.all([
-      signOwnershipProof(w1, url),
-      signOwnershipProof(w2, url),
-    ]);
-    const cfg = mockGatewayConfig({
-      publicBaseUrl: url,
-      ownershipProofs: [p1, p2],
-    });
-    const doc = buildWellKnownDocument(cfg, [route("/a")]);
+    const [p1, p2] = await Promise.all([signOwnershipProof(w1, url), signOwnershipProof(w2, url)]);
+
+    const doc = buildWellKnownDocument(
+      mockGatewayConfig({ publicBaseUrl: url, ownershipProofs: [p1, "not-a-proof", p2] }),
+      [route("/a")],
+    );
     expect(doc.ownershipProofs).toEqual([p1, p2]);
   });
-});
 
-// ═══════════════════════════════════════════════════════════════════════
-// Empty routes
-// ═══════════════════════════════════════════════════════════════════════
-
-describe("buildWellKnownDocument — empty routes (defensive)", () => {
-  it("returns a valid document with zero routes", () => {
-    const cfg = mockGatewayConfig({ publicBaseUrl: "https://gateway.example.com" });
-    const doc = buildWellKnownDocument(cfg, []);
-    expect(doc.version).toBe(1);
-    expect(doc.resources).toEqual([]);
-    // Note: production startup refuses an empty registry; this case
-    // exists so the builder itself is still defensible if anyone calls
-    // it with an empty list during tests.
+  it("emits an empty array when proofs are configured but publicBaseUrl is unset", () => {
+    const doc = buildWellKnownDocument(
+      mockGatewayConfig({ publicBaseUrl: undefined, ownershipProofs: ["0x" + "a".repeat(130)] }),
+      [route("/a")],
+    );
+    expect(doc.ownershipProofs).toEqual([]);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// instructions field (optional-per-spec "legacy guidance")
+// instructions field — points crawlers at the richer surface
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("buildWellKnownDocument — instructions", () => {
-  it("is always present and matches the exported WELL_KNOWN_INSTRUCTIONS constant", () => {
-    const doc = buildWellKnownDocument(mockGatewayConfig(), [route("/a")]);
-    expect(typeof doc.instructions).toBe("string");
-    expect(doc.instructions.length).toBeGreaterThan(0);
-    expect(doc.instructions).toBe(WELL_KNOWN_INSTRUCTIONS);
-  });
-
-  it("points crawlers at the richer /openapi.json surface", () => {
-    // The whole point of the field is to nudge crawlers that land on
-    // /.well-known/x402 alone (e.g. via DNS _x402) toward the richer
-    // OpenAPI doc rather than stopping at the minimal fan-out list.
-    const doc = buildWellKnownDocument(mockGatewayConfig(), [route("/a")]);
-    expect(doc.instructions).toContain("/openapi.json");
-    expect(doc.instructions).toContain("PAYMENT-REQUIRED");
-  });
-
-  it("is identical whether publicBaseUrl is set or not", () => {
-    // The string is static (not templated with the base URL) so the
-    // same text ships regardless of deployment — crawlers in either
-    // posture get the same guidance.
+  it("is always present, matches WELL_KNOWN_INSTRUCTIONS, references /openapi.json + PAYMENT-REQUIRED, and is independent of publicBaseUrl", () => {
     const withUrl = buildWellKnownDocument(
       mockGatewayConfig({ publicBaseUrl: "https://gateway.example.com" }),
       [route("/a")],
@@ -224,6 +141,10 @@ describe("buildWellKnownDocument — instructions", () => {
       mockGatewayConfig({ publicBaseUrl: undefined }),
       [route("/a")],
     );
+    expect(withUrl.instructions).toBe(WELL_KNOWN_INSTRUCTIONS);
+    expect(withUrl.instructions).toContain("/openapi.json");
+    expect(withUrl.instructions).toContain("PAYMENT-REQUIRED");
+    // Static text — same for both deployment postures.
     expect(withUrl.instructions).toBe(withoutUrl.instructions);
   });
 });

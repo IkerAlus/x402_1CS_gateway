@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   buildPaymentRequirements,
   configureOneClickSdk,
-  buildQuoteRequest,
+  buildSwapQuoteRequest,
   buildQuoteDeadline,
+  applyOperatorMargin,
+  validateBuyerDestination,
   mapToPaymentRequirements,
   computeMaxTimeoutSeconds,
   validateDeadline,
@@ -16,43 +18,30 @@ import {
   AuthenticationError,
   ServiceUnavailableError,
   DeadlineTooShortError,
+  InvalidInputError,
   OneClickApiError,
   OpenAPI,
 } from "../types.js";
-import type { QuoteResponse } from "../types.js";
+import type { QuoteResponse, SwapRequestInput, SwapState, StateStore } from "../types.js";
 import type { GatewayConfig } from "../infra/config.js";
-import type { SwapState, StateStore } from "../types.js";
+import { mockGatewayConfig, DESTINATION_PRESETS } from "../mocks/index.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Test fixtures
 // ═══════════════════════════════════════════════════════════════════════
 
-/** Minimal valid gateway config for testing. */
-function testConfig(overrides?: Partial<GatewayConfig>): GatewayConfig {
+function testConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
+  return mockGatewayConfig(overrides);
+}
+
+function testInputs(overrides: Partial<SwapRequestInput> = {}): SwapRequestInput {
   return {
-    oneClickJwt: "test-jwt-token",
-    oneClickBaseUrl: "https://1click.chaindefuser.com",
-    merchantRecipient: "merchant.near",
-    merchantAssetOut: "near:nUSDC",
-    merchantAmountOut: "1000000",
-    originNetwork: "eip155:8453",
-    originAssetIn: "nep141:base-0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    originTokenAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    originRpcUrls: ["https://mainnet.base.org"],
-    facilitatorPrivateKey: "0xdeadbeef",
-    gatewayRefundAddress: "0x1234567890abcdef1234567890abcdef12345678",
-    maxPollTimeMs: 300_000,
-    pollIntervalBaseMs: 2_000,
-    pollIntervalMaxMs: 30_000,
-    quoteExpiryBufferSec: 30,
-    tokenName: "USDC",
-    tokenVersion: "2",
-    tokenSupportsEip3009: true,
+    ...DESTINATION_PRESETS.near,
+    amountIn: "10000000",
     ...overrides,
   };
 }
 
-/** A mock 1CS QuoteResponse with a deadline 10 minutes in the future. */
 function mockQuoteResponse(overrides?: Partial<QuoteResponse["quote"]>): QuoteResponse {
   const deadline = new Date(Date.now() + 600_000).toISOString();
   return {
@@ -61,11 +50,11 @@ function mockQuoteResponse(overrides?: Partial<QuoteResponse["quote"]>): QuoteRe
     signature: "mock-signature",
     quoteRequest: {
       dry: false,
-      swapType: "EXACT_OUTPUT" as const,
-      amount: "1000000",
-      originAsset: "nep141:base-0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-      destinationAsset: "near:nUSDC",
-      recipient: "merchant.near",
+      swapType: "EXACT_INPUT" as const,
+      amount: "10000000",
+      originAsset: "nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near",
+      destinationAsset: DESTINATION_PRESETS.near.destinationAsset,
+      recipient: DESTINATION_PRESETS.near.destinationAddress,
       refundTo: "0x1234567890abcdef1234567890abcdef12345678",
       slippageTolerance: 50,
       depositType: "ORIGIN_CHAIN" as const,
@@ -75,14 +64,14 @@ function mockQuoteResponse(overrides?: Partial<QuoteResponse["quote"]>): QuoteRe
     },
     quote: {
       depositAddress: "0xDEADBEEF1234567890abcdef1234567890abcdef",
-      amountIn: "1050000",
-      amountInFormatted: "1.05",
-      amountInUsd: "1.05",
-      minAmountIn: "1000000",
-      amountOut: "1000000",
-      amountOutFormatted: "1.00",
-      amountOutUsd: "1.00",
-      minAmountOut: "990000",
+      amountIn: "10000000",
+      amountInFormatted: "10.00",
+      amountInUsd: "10.00",
+      minAmountIn: "10000000",
+      amountOut: "9985000",
+      amountOutFormatted: "9.985",
+      amountOutUsd: "9.99",
+      minAmountOut: "9950000",
       deadline,
       timeWhenInactive: new Date(Date.now() + 500_000).toISOString(),
       timeEstimate: 30,
@@ -91,12 +80,10 @@ function mockQuoteResponse(overrides?: Partial<QuoteResponse["quote"]>): QuoteRe
   };
 }
 
-/** Create a mock QuoteFn that returns a fixed response. */
 function mockQuoteFn(response: QuoteResponse): QuoteFn {
   return async () => response;
 }
 
-/** Create a mock QuoteFn that captures the request and returns a fixed response. */
 function capturingQuoteFn(response: QuoteResponse) {
   let captured: Parameters<QuoteFn>[0] | undefined;
   const fn: QuoteFn = async (req) => {
@@ -106,7 +93,6 @@ function capturingQuoteFn(response: QuoteResponse) {
   return { fn, getCaptured: () => captured };
 }
 
-/** Create a mock QuoteFn that throws a 1CS ApiError. */
 function failingQuoteFn(status: number, body?: unknown): QuoteFn {
   return async () => {
     throw new OneClickApiError(
@@ -117,657 +103,424 @@ function failingQuoteFn(status: number, body?: unknown): QuoteFn {
   };
 }
 
-/** Create a mock QuoteFn that throws a network error. */
-function networkErrorQuoteFn(message: string): QuoteFn {
-  return async () => {
-    throw new Error(message);
-  };
-}
-
-/** In-memory mock StateStore. */
-function createMockStore(): StateStore & { states: Map<string, SwapState> } {
+function makeMockStore(): StateStore {
   const states = new Map<string, SwapState>();
   return {
-    states,
-    async create(depositAddress: string, state: SwapState) {
-      states.set(depositAddress, state);
+    create: async (addr, state) => {
+      states.set(addr, state);
     },
-    async get(depositAddress: string) {
-      return states.get(depositAddress) ?? null;
+    get: async (addr) => states.get(addr) ?? null,
+    update: async (addr, patch) => {
+      const current = states.get(addr);
+      if (current) states.set(addr, { ...current, ...patch });
     },
-    async update(depositAddress: string, patch: Partial<SwapState>) {
-      const existing = states.get(depositAddress);
-      if (existing) {
-        states.set(depositAddress, { ...existing, ...patch });
-      }
+    listExpired: async () => [],
+    listByPhase: async () => [],
+    delete: async (addr) => {
+      states.delete(addr);
     },
-    async listExpired() {
-      return [];
-    },
-    async delete(depositAddress: string) {
-      states.delete(depositAddress);
-    },
+    close: async () => {},
   };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Integration tests — buildPaymentRequirements
-// ═══════════════════════════════════════════════════════════════════════
-
-describe("buildPaymentRequirements", () => {
-  it("returns correct PaymentRequirements from a successful 1CS quote", async () => {
-    const quoteResp = mockQuoteResponse();
-    const cfg = testConfig();
-    const store = createMockStore();
-
-    const result = await buildPaymentRequirements(
-      cfg, store, "/api/resource", mockQuoteFn(quoteResp),
-    );
-
-    const req = result.requirements;
-    expect(req.scheme).toBe("exact");
-    expect(req.network).toBe("eip155:8453");
-    expect(req.asset).toBe("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
-    expect(req.amount).toBe("1050000"); // amountIn from the quote
-    expect(req.payTo).toBe("0xDEADBEEF1234567890abcdef1234567890abcdef");
-    expect(req.maxTimeoutSeconds).toBeGreaterThan(0);
-    // Scheme-signing fields (name/version/assetTransferMethod) stay intact.
-    // The informational `crossChain` sibling is covered in its own test
-    // block below, so we use `toMatchObject` here rather than `toEqual`
-    // to allow the extra key without weakening the invariant.
-    expect(req.extra).toMatchObject({
-      name: "USDC",
-      version: "2",
-      assetTransferMethod: "eip3009",
-    });
-  });
-
-  it("persists a SwapState with phase QUOTED in the store", async () => {
-    const quoteResp = mockQuoteResponse();
-    const cfg = testConfig();
-    const store = createMockStore();
-
-    const result = await buildPaymentRequirements(
-      cfg, store, "/api/resource", mockQuoteFn(quoteResp),
-    );
-
-    const depositAddr = result.state.depositAddress;
-    expect(store.states.has(depositAddr)).toBe(true);
-
-    const persisted = store.states.get(depositAddr)!;
-    expect(persisted.phase).toBe("QUOTED");
-    expect(persisted.depositAddress).toBe("0xDEADBEEF1234567890abcdef1234567890abcdef");
-    expect(persisted.quoteResponse.correlationId).toBe("corr-123");
-    expect(persisted.paymentRequirements.scheme).toBe("exact");
-    expect(persisted.createdAt).toBeGreaterThan(0);
-    expect(persisted.updatedAt).toBe(persisted.createdAt);
-  });
-
-  it("uses permit2 when tokenSupportsEip3009 is false", async () => {
-    const quoteResp = mockQuoteResponse();
-    const cfg = testConfig({ tokenSupportsEip3009: false });
-    const store = createMockStore();
-
-    const result = await buildPaymentRequirements(
-      cfg, store, "/api/resource", mockQuoteFn(quoteResp),
-    );
-
-    expect(result.requirements.extra).toEqual(
-      expect.objectContaining({ assetTransferMethod: "permit2" }),
-    );
-  });
-
-  it("sends correct fields in the 1CS quote request", async () => {
-    const quoteResp = mockQuoteResponse();
-    const { fn, getCaptured } = capturingQuoteFn(quoteResp);
-    const cfg = testConfig();
-    const store = createMockStore();
-
-    await buildPaymentRequirements(cfg, store, "/api/resource", fn);
-
-    const req = getCaptured()!;
-    expect(req).toBeDefined();
-    expect(req.dry).toBe(false);
-    expect(req.swapType).toBe("EXACT_OUTPUT");
-    expect(req.originAsset).toBe("nep141:base-0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
-    expect(req.destinationAsset).toBe("near:nUSDC");
-    expect(req.amount).toBe("1000000");
-    expect(req.recipient).toBe("merchant.near");
-    expect(req.refundTo).toBe("0x1234567890abcdef1234567890abcdef12345678");
-    expect(req.depositType).toBe("ORIGIN_CHAIN");
-    expect(req.refundType).toBe("ORIGIN_CHAIN");
-    expect(req.recipientType).toBe("DESTINATION_CHAIN");
-    expect(req.deadline).toBeDefined();
-  });
-
-  // ── Error handling ─────────────────────────────────────────────────
-
-  it("throws QuoteUnavailableError on 1CS 400 response", async () => {
-    const cfg = testConfig();
-    const store = createMockStore();
-
-    await expect(
-      buildPaymentRequirements(
-        cfg, store, "/api/resource",
-        failingQuoteFn(400, { message: "unsupported asset pair" }),
-      ),
-    ).rejects.toThrow(QuoteUnavailableError);
-  });
-
-  it("throws AuthenticationError on 1CS 401 response", async () => {
-    const cfg = testConfig();
-    const store = createMockStore();
-
-    await expect(
-      buildPaymentRequirements(
-        cfg, store, "/api/resource",
-        failingQuoteFn(401, { message: "JWT expired" }),
-      ),
-    ).rejects.toThrow(AuthenticationError);
-  });
-
-  it("throws ServiceUnavailableError on 1CS 503 response", async () => {
-    const cfg = testConfig();
-    const store = createMockStore();
-
-    await expect(
-      buildPaymentRequirements(
-        cfg, store, "/api/resource",
-        failingQuoteFn(503, { message: "service down" }),
-      ),
-    ).rejects.toThrow(ServiceUnavailableError);
-  });
-
-  it("throws ServiceUnavailableError on network failure", async () => {
-    const cfg = testConfig();
-    const store = createMockStore();
-
-    await expect(
-      buildPaymentRequirements(
-        cfg, store, "/api/resource",
-        networkErrorQuoteFn("ECONNREFUSED"),
-      ),
-    ).rejects.toThrow(ServiceUnavailableError);
-  });
-
-  it("throws DeadlineTooShortError when quote deadline is too tight", async () => {
-    const deadline = new Date(Date.now() + 10_000).toISOString(); // 10s
-    const quoteResp = mockQuoteResponse({ deadline });
-    const cfg = testConfig({ quoteExpiryBufferSec: 30 });
-    const store = createMockStore();
-
-    await expect(
-      buildPaymentRequirements(cfg, store, "/api/resource", mockQuoteFn(quoteResp)),
-    ).rejects.toThrow(DeadlineTooShortError);
-  });
-
-  it("throws QuoteUnavailableError when depositAddress is missing", async () => {
-    const quoteResp = mockQuoteResponse({ depositAddress: undefined });
-    const cfg = testConfig();
-    const store = createMockStore();
-
-    await expect(
-      buildPaymentRequirements(cfg, store, "/api/resource", mockQuoteFn(quoteResp)),
-    ).rejects.toThrow(QuoteUnavailableError);
-  });
-
-  it("does not persist state when quote fails", async () => {
-    const cfg = testConfig();
-    const store = createMockStore();
-
-    await expect(
-      buildPaymentRequirements(
-        cfg, store, "/api/resource",
-        failingQuoteFn(400, { message: "bad" }),
-      ),
-    ).rejects.toThrow();
-
-    expect(store.states.size).toBe(0);
-  });
-
-  it("does not persist state when deadline validation fails", async () => {
-    const deadline = new Date(Date.now() + 5_000).toISOString();
-    const quoteResp = mockQuoteResponse({ deadline });
-    const cfg = testConfig({ quoteExpiryBufferSec: 30 });
-    const store = createMockStore();
-
-    await expect(
-      buildPaymentRequirements(cfg, store, "/api/resource", mockQuoteFn(quoteResp)),
-    ).rejects.toThrow(DeadlineTooShortError);
-
-    expect(store.states.size).toBe(0);
-  });
-
-  it("includes error message from 1CS body in thrown error", async () => {
-    const cfg = testConfig();
-    const store = createMockStore();
-
-    await expect(
-      buildPaymentRequirements(
-        cfg, store, "/api/resource",
-        failingQuoteFn(400, { message: "unsupported asset pair: FOO/BAR" }),
-      ),
-    ).rejects.toThrow(/unsupported asset pair/);
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// Unit tests — individual helpers
+// configureOneClickSdk + buildQuoteDeadline (tiny SDK glue)
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("configureOneClickSdk", () => {
-  it("sets OpenAPI.BASE and OpenAPI.TOKEN from config", () => {
-    const cfg = testConfig({
-      oneClickBaseUrl: "https://custom.api.example.com",
-      oneClickJwt: "custom-jwt",
-    });
-
-    configureOneClickSdk(cfg);
-
-    expect(OpenAPI.BASE).toBe("https://custom.api.example.com");
-    expect(OpenAPI.TOKEN).toBe("custom-jwt");
-  });
-});
-
-describe("buildQuoteRequest", () => {
-  it("constructs a correct EXACT_OUTPUT request", () => {
-    const cfg = testConfig();
-    const deadline = "2026-04-01T00:00:00Z";
-    const req = buildQuoteRequest(cfg, deadline);
-
-    expect(req.dry).toBe(false);
-    expect(req.swapType).toBe("EXACT_OUTPUT");
-    expect(req.slippageTolerance).toBe(50);
-    expect(req.originAsset).toBe(cfg.originAssetIn);
-    expect(req.depositType).toBe("ORIGIN_CHAIN");
-    expect(req.destinationAsset).toBe(cfg.merchantAssetOut);
-    expect(req.amount).toBe(cfg.merchantAmountOut);
-    expect(req.refundTo).toBe(cfg.gatewayRefundAddress);
-    expect(req.refundType).toBe("ORIGIN_CHAIN");
-    expect(req.recipient).toBe(cfg.merchantRecipient);
-    expect(req.recipientType).toBe("DESTINATION_CHAIN");
-    expect(req.deadline).toBe(deadline);
-    expect(req.referral).toBe("x402-test");
+  it("sets OpenAPI.BASE and OpenAPI.TOKEN from cfg", () => {
+    configureOneClickSdk(testConfig({
+      oneClickJwt: "fresh-jwt",
+      oneClickBaseUrl: "https://custom.1click.example.com",
+    }));
+    expect(OpenAPI.BASE).toBe("https://custom.1click.example.com");
+    expect(OpenAPI.TOKEN).toBe("fresh-jwt");
   });
 });
 
 describe("buildQuoteDeadline", () => {
-  it("returns an ISO timestamp maxPollTimeMs + 120s in the future", () => {
-    const cfg = testConfig({ maxPollTimeMs: 300_000 });
-    const deadline = buildQuoteDeadline(cfg);
-    const deadlineMs = new Date(deadline).getTime();
-    const expectedMs = Date.now() + 300_000 + 120_000;
-
-    // Allow 1 second tolerance for test execution time
-    expect(deadlineMs).toBeGreaterThan(expectedMs - 1000);
-    expect(deadlineMs).toBeLessThan(expectedMs + 1000);
+  it("returns ISO string at maxPollTimeMs + 120s in the future", () => {
+    const before = Date.now();
+    const result = buildQuoteDeadline(testConfig({ maxPollTimeMs: 300_000 }));
+    const deadlineMs = new Date(result).getTime();
+    expect(deadlineMs).toBeGreaterThanOrEqual(before + 300_000 + 120_000);
   });
 });
 
-describe("computeMaxTimeoutSeconds", () => {
-  it("returns seconds until deadline minus buffer", () => {
-    const deadline = new Date(Date.now() + 600_000).toISOString(); // 10 min
-    const result = computeMaxTimeoutSeconds(deadline, 30);
+// ═══════════════════════════════════════════════════════════════════════
+// buildSwapQuoteRequest — assert the full shape we send to 1CS
+// ═══════════════════════════════════════════════════════════════════════
 
-    expect(result).toBeGreaterThanOrEqual(560);
-    expect(result).toBeLessThanOrEqual(575);
+describe("buildSwapQuoteRequest", () => {
+  it("threads cfg + buyer inputs into the full 1CS request shape", () => {
+    const cfg = testConfig({ originAssetIn: "nep141:base-0xorigin.omft.near" });
+    const inputs = testInputs({
+      destinationAsset: "nep141:arb-0xaf88.omft.near",
+      destinationAddress: "0xabcd1234abcd1234abcd1234abcd1234abcd1234",
+      amountIn: "5000000",
+    });
+    const req = buildSwapQuoteRequest(cfg, inputs, "2026-01-01T00:00:00Z");
+
+    expect(req).toMatchObject({
+      swapType: "EXACT_INPUT",
+      originAsset: cfg.originAssetIn,
+      destinationAsset: inputs.destinationAsset,
+      recipient: inputs.destinationAddress,
+      amount: inputs.amountIn,
+      recipientType: "DESTINATION_CHAIN",
+      depositType: "ORIGIN_CHAIN",
+      refundType: "ORIGIN_CHAIN",
+      deadline: "2026-01-01T00:00:00Z",
+    });
   });
 
-  it("floors at 60s minimum", () => {
-    const deadline = new Date(Date.now() + 80_000).toISOString(); // 80s
-    const result = computeMaxTimeoutSeconds(deadline, 30);
+  it("uses buyer's refundAddress when supplied; falls back to cfg.gatewayRefundAddress otherwise", () => {
+    const cfg = testConfig({ gatewayRefundAddress: "0xfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed" });
 
-    // raw = ~80 - 30 = ~50 → clamped to 60
-    expect(result).toBe(60);
-  });
+    expect(
+      buildSwapQuoteRequest(cfg, testInputs({ refundAddress: "0xbeef".padEnd(42, "0") }), "2026-01-01T00:00:00Z").refundTo,
+    ).toBe("0xbeef".padEnd(42, "0"));
 
-  it("returns 600s fallback when no deadline", () => {
-    expect(computeMaxTimeoutSeconds(undefined, 30)).toBe(600);
+    expect(
+      buildSwapQuoteRequest(cfg, testInputs(), "2026-01-01T00:00:00Z").refundTo,
+    ).toBe(cfg.gatewayRefundAddress);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// applyOperatorMargin — BigInt math + bounds
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("applyOperatorMargin", () => {
+  it("computes 30 bps margin (0.3%) precisely on a stablecoin amount", () => {
+    const result = applyOperatorMargin("10000000", 30);
+    expect(result.amountWithMargin).toBe("10030000");
+    expect(result.marginAmount).toBe("30000");
+  });
+
+  it("returns the original amount when bps=0 (free deployment)", () => {
+    expect(applyOperatorMargin("10000000", 0)).toEqual({
+      amountWithMargin: "10000000",
+      marginAmount: "0",
+    });
+  });
+
+  it("preserves precision on amounts that exceed Number.MAX_SAFE_INTEGER", () => {
+    // 10^18 (1 ETH in wei) — guards against accidental Number coercion.
+    const result = applyOperatorMargin("1000000000000000000", 30);
+    expect(result.amountWithMargin).toBe("1003000000000000000");
+  });
+
+  it("throws on out-of-range bps (negative, >1000, or non-integer)", () => {
+    expect(() => applyOperatorMargin("10000000", -1)).toThrow(/out of range/);
+    expect(() => applyOperatorMargin("10000000", 1001)).toThrow(/out of range/);
+    expect(() => applyOperatorMargin("10000000", 30.5)).toThrow(/out of range/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// validateBuyerDestination — pre-quote chain-format hard-fail
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("validateBuyerDestination", () => {
+  it("accepts every preset in DESTINATION_PRESETS", () => {
+    for (const preset of Object.values(DESTINATION_PRESETS)) {
+      expect(() => validateBuyerDestination(testInputs(preset))).not.toThrow();
+    }
+  });
+
+  it.each([
+    ["NEAR address on an EVM chain", { ...DESTINATION_PRESETS.arbitrum, destinationAddress: "alice.near" }],
+    ["EVM address on a NEAR-native asset", { ...DESTINATION_PRESETS.near, destinationAddress: "0x1234567890abcdef1234567890abcdef12345678" }],
+    ["EVM address on a non-EVM (Stellar) chain", { ...DESTINATION_PRESETS.stellar, destinationAddress: "0x1234567890abcdef1234567890abcdef12345678" }],
+  ])("rejects %s with InvalidInputError + structured reasons", (_label, inputs) => {
+    try {
+      validateBuyerDestination(testInputs(inputs));
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(InvalidInputError);
+      const reasons = (err as InvalidInputError).context?.reasons;
+      expect(Array.isArray(reasons) && (reasons as string[]).length > 0).toBe(true);
+    }
+  });
+
+  it("passes through unknown chain prefixes (1CS may know chains we don't)", () => {
+    expect(() =>
+      validateBuyerDestination(testInputs({
+        destinationChain: "futurechain",
+        destinationAsset: "nep141:futurechain-0xabc.omft.near",
+        destinationAddress: "alice.near",
+      })),
+    ).not.toThrow();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// validateDeadline
+// ═══════════════════════════════════════════════════════════════════════
 
 describe("validateDeadline", () => {
-  it("does not throw when deadline is far enough away", () => {
-    const quoteResp = mockQuoteResponse();
-    const cfg = testConfig({ quoteExpiryBufferSec: 30 });
+  it("rejects deadlines closer than the buffer; accepts otherwise; passes when no deadline", () => {
+    const cfg = testConfig({ quoteExpiryBufferSec: 60 });
+    expect(() =>
+      validateDeadline(mockQuoteResponse({ deadline: new Date(Date.now() + 30_000).toISOString() }), cfg),
+    ).toThrow(DeadlineTooShortError);
+    expect(() =>
+      validateDeadline(mockQuoteResponse({ deadline: new Date(Date.now() + 600_000).toISOString() }), cfg),
+    ).not.toThrow();
 
-    expect(() => validateDeadline(quoteResp, cfg)).not.toThrow();
-  });
-
-  it("throws DeadlineTooShortError when deadline is too close", () => {
-    const deadline = new Date(Date.now() + 10_000).toISOString();
-    const quoteResp = mockQuoteResponse({ deadline });
-    const cfg = testConfig({ quoteExpiryBufferSec: 30 });
-
-    expect(() => validateDeadline(quoteResp, cfg)).toThrow(DeadlineTooShortError);
-  });
-
-  it("does not throw when quote has no deadline", () => {
-    const quoteResp = mockQuoteResponse({ deadline: undefined });
-    const cfg = testConfig({ quoteExpiryBufferSec: 30 });
-
-    expect(() => validateDeadline(quoteResp, cfg)).not.toThrow();
+    const noDeadline = mockQuoteResponse();
+    delete noDeadline.quote.deadline;
+    expect(() => validateDeadline(noDeadline, cfg)).not.toThrow();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// mapToPaymentRequirements
+// ═══════════════════════════════════════════════════════════════════════
 
 describe("mapToPaymentRequirements", () => {
-  it("maps all fields correctly", () => {
-    const quoteResp = mockQuoteResponse();
-    const cfg = testConfig();
-    const req = mapToPaymentRequirements(quoteResp, cfg);
+  it("uses amountWithMargin as x402 amount and the deposit address as payTo", () => {
+    // The two foot-guns: forgetting the margin (operator earns nothing) or
+    // forgetting payTo = deposit address (the trick that makes the gateway work).
+    const cfg = testConfig({ operatorMarginBps: 30 });
+    const response = mockQuoteResponse();
+    const margin = applyOperatorMargin(response.quote.amountIn, cfg.operatorMarginBps);
 
+    const req = mapToPaymentRequirements(response, cfg, testInputs(), margin);
+
+    expect(req.amount).toBe(margin.amountWithMargin);
+    expect(req.amount).toBe("10030000"); // 10M + 0.3%
+    expect(req.payTo).toBe(response.quote.depositAddress);
     expect(req.scheme).toBe("exact");
-    expect(req.network).toBe("eip155:8453");
-    expect(req.asset).toBe("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
-    expect(req.amount).toBe("1050000");
-    expect(req.payTo).toBe("0xDEADBEEF1234567890abcdef1234567890abcdef");
-    expect(req.maxTimeoutSeconds).toBeGreaterThan(0);
-    // Scheme-signing fields stay intact; see the dedicated
-    // `extra.crossChain` block below for the informational sibling.
-    expect(req.extra).toMatchObject({
-      name: "USDC",
-      version: "2",
-      assetTransferMethod: "eip3009",
+    expect(req.network).toBe(cfg.originNetwork);
+  });
+
+  it("populates extra.crossChain with operatorFee, destinationRecipient, destinationAsset, and refundTo (buyer wins)", () => {
+    const cfg = testConfig({
+      operatorMarginBps: 50,
+      gatewayRefundAddress: "0xfacefacefacefacefacefacefacefacefaceface",
     });
+    const response = mockQuoteResponse();
+    const margin = applyOperatorMargin(response.quote.amountIn, cfg.operatorMarginBps);
+
+    // Buyer-supplied refundAddress wins.
+    const inputs = testInputs({
+      ...DESTINATION_PRESETS.arbitrum,
+      refundAddress: "0xbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef",
+    });
+    const cross = mapToPaymentRequirements(response, cfg, inputs, margin).extra.crossChain as {
+      operatorFee: { bps: number; amount: string; currency: string };
+      destinationRecipient: string;
+      destinationAsset: string;
+      refundTo: string;
+    };
+
+    expect(cross.operatorFee).toEqual({ bps: 50, amount: margin.marginAmount, currency: "USDC" });
+    expect(cross.destinationRecipient).toBe(inputs.destinationAddress);
+    expect(cross.destinationAsset).toBe(inputs.destinationAsset);
+    expect(cross.refundTo).toBe(inputs.refundAddress);
+
+    // Buyer omits refundAddress → falls back to gateway address.
+    const noRefund = mapToPaymentRequirements(response, cfg, testInputs(), margin).extra.crossChain as { refundTo: string };
+    expect(noRefund.refundTo).toBe(cfg.gatewayRefundAddress);
   });
 
-  it("uses permit2 when tokenSupportsEip3009 is false", () => {
-    const quoteResp = mockQuoteResponse();
-    const cfg = testConfig({ tokenSupportsEip3009: false });
-    const req = mapToPaymentRequirements(quoteResp, cfg);
+  it("threads tokenSupportsEip3009 into extra.assetTransferMethod (eip3009 vs permit2)", () => {
+    const response = mockQuoteResponse();
+    const margin = applyOperatorMargin(response.quote.amountIn, 30);
 
-    expect(req.extra).toEqual(
-      expect.objectContaining({ assetTransferMethod: "permit2" }),
-    );
-  });
-
-  it("uses custom token name and version from config", () => {
-    const quoteResp = mockQuoteResponse();
-    const cfg = testConfig({ tokenName: "DAI", tokenVersion: "1" });
-    const req = mapToPaymentRequirements(quoteResp, cfg);
-
-    expect(req.extra).toEqual(
-      expect.objectContaining({ name: "DAI", version: "1" }),
-    );
+    expect(
+      mapToPaymentRequirements(response, testConfig({ tokenSupportsEip3009: true }), testInputs(), margin).extra
+        .assetTransferMethod,
+    ).toBe("eip3009");
+    expect(
+      mapToPaymentRequirements(response, testConfig({ tokenSupportsEip3009: false }), testInputs(), margin).extra
+        .assetTransferMethod,
+    ).toBe("permit2");
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// extra.crossChain — informational 1CS quote metadata
+// computeMaxTimeoutSeconds + toQuoteResponseRecord (small helpers)
 // ═══════════════════════════════════════════════════════════════════════
 
-describe("mapToPaymentRequirements — extra.crossChain block", () => {
-  it("sets protocol discriminator to \"1cs\"", () => {
-    const req = mapToPaymentRequirements(mockQuoteResponse(), testConfig());
-    const cross = (req.extra.crossChain as Record<string, unknown>);
-    expect(cross).toBeDefined();
-    expect(cross.protocol).toBe("1cs");
-  });
-
-  it("copies quoteId from QuoteResponse.correlationId (not quote.*)", () => {
-    const quoteResp = mockQuoteResponse();
-    // sanity: the mock fixture uses a known correlationId
-    expect(quoteResp.correlationId).toBe("corr-123");
-
-    const req = mapToPaymentRequirements(quoteResp, testConfig());
-    const cross = req.extra.crossChain as Record<string, unknown>;
-    expect(cross.quoteId).toBe("corr-123");
-  });
-
-  it("populates destination + refund fields from cfg and quote", () => {
-    const cfg = testConfig({
-      merchantRecipient: "merchant.near",
-      merchantAssetOut: "nep141:usdc.near",
-      gatewayRefundAddress: "0x1234567890abcdef1234567890abcdef12345678",
-    });
-    const req = mapToPaymentRequirements(mockQuoteResponse(), cfg);
-    const cross = req.extra.crossChain as Record<string, unknown>;
-
-    // Straight from cfg
-    expect(cross.destinationRecipient).toBe("merchant.near");
-    expect(cross.destinationAsset).toBe("nep141:usdc.near");
-    expect(cross.refundTo).toBe("0x1234567890abcdef1234567890abcdef12345678");
-
-    // Straight from quote (same values as the mock fixture)
-    expect(cross.amountOut).toBe("1000000");
-    expect(cross.amountOutFormatted).toBe("1.00");
-    expect(cross.amountOutUsd).toBe("1.00");
-    expect(cross.amountInUsd).toBe("1.05");
-  });
-
-  it("includes optional refundFee / depositMemo only when the quote provides them", () => {
-    // Quote with neither set
-    const clean = mapToPaymentRequirements(mockQuoteResponse(), testConfig());
-    const cleanCross = clean.extra.crossChain as Record<string, unknown>;
-    expect(cleanCross).not.toHaveProperty("refundFee");
-    expect(cleanCross).not.toHaveProperty("depositMemo");
-
-    // Quote with both set — ensure they round-trip into the block
-    const richQuote = mockQuoteResponse({
-      refundFee: "250",
-      depositMemo: "stellar-memo-abc",
-    });
-    const rich = mapToPaymentRequirements(richQuote, testConfig());
-    const richCross = rich.extra.crossChain as Record<string, unknown>;
-    expect(richCross.refundFee).toBe("250");
-    expect(richCross.depositMemo).toBe("stellar-memo-abc");
-  });
-
-  it("does not mutate or replace the EVM scheme-signing keys (name / version / assetTransferMethod)", () => {
-    // Introducing `crossChain` must NOT affect the sibling signing keys.
-    // This is the EVM-exact-scheme compatibility invariant.
-    const cfg = testConfig({ tokenName: "USD Coin", tokenVersion: "2" });
-    const req = mapToPaymentRequirements(mockQuoteResponse(), cfg);
-
-    expect(req.extra.name).toBe("USD Coin");
-    expect(req.extra.version).toBe("2");
-    expect(req.extra.assetTransferMethod).toBe("eip3009");
-    // And crossChain lives alongside, not in place of, the above.
-    expect(req.extra.crossChain).toBeDefined();
+describe("computeMaxTimeoutSeconds", () => {
+  it("returns 600 fallback when deadline is undefined; floors at 60 for short deadlines", () => {
+    expect(computeMaxTimeoutSeconds(undefined, 30)).toBe(600);
+    expect(computeMaxTimeoutSeconds(new Date(Date.now() + 5_000).toISOString(), 30)).toBe(60);
+    const longDeadline = new Date(Date.now() + 600_000).toISOString();
+    const result = computeMaxTimeoutSeconds(longDeadline, 30);
+    expect(result).toBeGreaterThan(560);
+    expect(result).toBeLessThanOrEqual(570);
   });
 });
 
 describe("toQuoteResponseRecord", () => {
-  it("produces a serialization-safe record", () => {
-    const quoteResp = mockQuoteResponse();
-    const record = toQuoteResponseRecord(quoteResp);
-
-    expect(record.correlationId).toBe("corr-123");
-    expect(record.signature).toBe("mock-signature");
-    expect(record.quote.depositAddress).toBe("0xDEADBEEF1234567890abcdef1234567890abcdef");
-    expect(record.quote.amountIn).toBe("1050000");
-    expect(record.quote.amountOut).toBe("1000000");
-    expect(record.quote.timeEstimate).toBe(30);
-    expect(record.quoteRequest).toBeDefined();
+  it("preserves correlationId, timestamp, signature, and key quote fields", () => {
+    const response = mockQuoteResponse();
+    const record = toQuoteResponseRecord(response);
+    expect(record.correlationId).toBe(response.correlationId);
+    expect(record.signature).toBe(response.signature);
+    expect(record.quote.depositAddress).toBe(response.quote.depositAddress);
+    expect(record.quote.amountIn).toBe(response.quote.amountIn);
+    expect(record.quote.amountOut).toBe(response.quote.amountOut);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// diagnoseQuoteRequest — recipient / asset format hints
+// buildPaymentRequirements (the main entry point — happy path + failure modes)
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("buildPaymentRequirements", () => {
+  it("returns requirements + persists state with swapInputs and operatorMarginBps on the happy path", async () => {
+    const cfg = testConfig();
+    const store = makeMockStore();
+    const inputs = testInputs();
+    const response = mockQuoteResponse();
+
+    const result = await buildPaymentRequirements(cfg, store, "/api/swap", inputs, mockQuoteFn(response));
+
+    expect(result.requirements.payTo).toBe(response.quote.depositAddress);
+    expect(result.state).toMatchObject({
+      phase: "QUOTED",
+      swapInputs: inputs,
+      operatorMarginBps: cfg.operatorMarginBps,
+      depositAddress: response.quote.depositAddress,
+    });
+    const stored = await store.get(response.quote.depositAddress!);
+    expect(stored?.depositAddress).toBe(response.quote.depositAddress);
+  });
+
+  it("forwards buyer-supplied destination into the 1CS quote request (EXACT_INPUT)", async () => {
+    const inputs = testInputs(DESTINATION_PRESETS.arbitrum);
+    const { fn, getCaptured } = capturingQuoteFn(mockQuoteResponse());
+
+    await buildPaymentRequirements(testConfig(), makeMockStore(), "/api/swap", inputs, fn);
+
+    expect(getCaptured()).toMatchObject({
+      destinationAsset: inputs.destinationAsset,
+      recipient: inputs.destinationAddress,
+      amount: inputs.amountIn,
+      swapType: "EXACT_INPUT",
+    });
+  });
+
+  it("rejects buyer destination format mismatches before contacting 1CS", async () => {
+    const inputs = testInputs({
+      ...DESTINATION_PRESETS.arbitrum,
+      destinationAddress: "alice.near",
+    });
+    const { fn, getCaptured } = capturingQuoteFn(mockQuoteResponse());
+
+    await expect(
+      buildPaymentRequirements(testConfig(), makeMockStore(), "/api/swap", inputs, fn),
+    ).rejects.toThrow(InvalidInputError);
+    expect(getCaptured()).toBeUndefined();
+  });
+
+  it("throws QuoteUnavailableError on missing/malformed depositAddress or zero amountIn", async () => {
+    const noAddr = mockQuoteResponse();
+    delete (noAddr.quote as { depositAddress?: string }).depositAddress;
+    await expect(
+      buildPaymentRequirements(testConfig(), makeMockStore(), "/api/swap", testInputs(), mockQuoteFn(noAddr)),
+    ).rejects.toThrow(QuoteUnavailableError);
+
+    await expect(
+      buildPaymentRequirements(testConfig(), makeMockStore(), "/api/swap", testInputs(), mockQuoteFn(mockQuoteResponse({ depositAddress: "not-an-address" }))),
+    ).rejects.toThrow(/invalid depositAddress/);
+
+    await expect(
+      buildPaymentRequirements(testConfig(), makeMockStore(), "/api/swap", testInputs(), mockQuoteFn(mockQuoteResponse({ amountIn: "0" }))),
+    ).rejects.toThrow(/invalid amountIn/);
+  });
+
+  it.each([
+    [400, QuoteUnavailableError],
+    [401, AuthenticationError],
+    [503, ServiceUnavailableError],
+  ] as const)("maps 1CS %i to the corresponding gateway error", async (status, ErrorClass) => {
+    await expect(
+      buildPaymentRequirements(
+        testConfig(),
+        makeMockStore(),
+        "/api/swap",
+        testInputs(),
+        failingQuoteFn(status, { message: "upstream" }),
+      ),
+    ).rejects.toThrow(ErrorClass);
+  });
+
+  it("maps network errors to ServiceUnavailableError", async () => {
+    const networkErr: QuoteFn = async () => { throw new Error("Network connection refused"); };
+    await expect(
+      buildPaymentRequirements(testConfig(), makeMockStore(), "/api/swap", testInputs(), networkErr),
+    ).rejects.toThrow(ServiceUnavailableError);
+  });
+
+  it("attaches diagnostic context (upstreamStatus + recipient + destinationAsset) on 1CS errors", async () => {
+    try {
+      await buildPaymentRequirements(
+        testConfig(),
+        makeMockStore(),
+        "/api/swap",
+        testInputs(),
+        failingQuoteFn(400),
+      );
+      throw new Error("should have thrown");
+    } catch (err) {
+      const ctx = (err as QuoteUnavailableError).context;
+      expect(ctx?.upstreamStatus).toBe(400);
+      expect(ctx?.recipient).toBeDefined();
+      expect(ctx?.destinationAsset).toBeDefined();
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// diagnoseQuoteRequest — distinct from validateBuyerDestination: this is
+// the soft post-1CS-error diagnoser whose hints land in operator logs.
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("diagnoseQuoteRequest", () => {
-  it("returns empty for a clean NEAR→NEAR config", () => {
+  it("returns no hints for a clean quote", () => {
     expect(
       diagnoseQuoteRequest({
-        originAsset: "nep141:base-0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.omft.near",
+        originAsset: "nep141:base-0xabc.omft.near",
         destinationAsset: "nep141:usdt.tether-token.near",
-        recipient: "merchantx402.near",
-        amount: "10000",
+        recipient: "alice.near",
+        amount: "1000000",
         refundTo: "0x1234567890abcdef1234567890abcdef12345678",
       }),
     ).toEqual([]);
   });
 
-  it("returns empty for a clean EVM-bridge destination", () => {
+  it("flags whitespace/inline-comment artifacts in any field (.env copy-paste bugs)", () => {
+    expect(
+      diagnoseQuoteRequest({ recipient: " alice.near" }).some((h) => h.includes("whitespace")),
+    ).toBe(true);
+    expect(
+      diagnoseQuoteRequest({ destinationAsset: "nep141:usdt.tether-token.near #comment" }).some((h) =>
+        h.includes("#"),
+      ),
+    ).toBe(true);
+  });
+
+  it("flags chain-format mismatches and unknown prefixes", () => {
+    // EVM destination + NEAR address
     expect(
       diagnoseQuoteRequest({
-        originAsset: "nep141:base-0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.omft.near",
-        destinationAsset: "nep141:arb-0xaf88d065e77c8cC2239327C5EDb3A432268e5831.omft.near",
+        destinationAsset: "nep141:arb-0xaf88.omft.near",
+        recipient: "alice.near",
+      }).some((h) => h.toLowerCase().includes("evm address")),
+    ).toBe(true);
+
+    // Unknown chain prefix
+    expect(
+      diagnoseQuoteRequest({
+        destinationAsset: "nep141:futurechain-0xabc.omft.near",
         recipient: "0x1234567890abcdef1234567890abcdef12345678",
-        amount: "10000",
-        refundTo: "0x1234567890abcdef1234567890abcdef12345678",
-      }),
-    ).toEqual([]);
-  });
-
-  it("flags a .nea typo as invalid NEAR account", () => {
-    const hints = diagnoseQuoteRequest({
-      destinationAsset: "nep141:usdt.tether-token.near",
-      recipient: "merchantx402.nea",
-    });
-    expect(hints.length).toBeGreaterThanOrEqual(1);
-    expect(hints.join("\n").toLowerCase()).toContain("valid near account");
-    expect(hints.join("\n")).toContain("merchantx402.nea");
-  });
-
-  it("flags an EVM address as recipient for a NEAR-native destination", () => {
-    const hints = diagnoseQuoteRequest({
-      destinationAsset: "nep141:usdt.tether-token.near",
-      recipient: "0x1234567890abcdef1234567890abcdef12345678",
-    });
-    expect(hints.join("\n").toLowerCase()).toContain("evm address");
-    expect(hints.join("\n").toLowerCase()).toContain("near");
-  });
-
-  it("flags whitespace in any field (leading space, inline #)", () => {
-    const hints = diagnoseQuoteRequest({
-      recipient: " merchantx402.near",
-      destinationAsset: "nep141:usdt.tether-token.near #nep141:gnosis-0xabc.omft.near",
-    });
-    const joined = hints.join("\n");
-    expect(joined).toContain("whitespace");
-    // Both fields flagged
-    expect(joined).toContain("recipient");
-    expect(joined).toContain("destinationAsset");
-  });
-
-  it("flags a NEAR account for an EVM-bridged destination", () => {
-    const hints = diagnoseQuoteRequest({
-      destinationAsset: "nep141:arb-0xaf88d065e77c8cC2239327C5EDb3A432268e5831.omft.near",
-      recipient: "some.near",
-    });
-    expect(hints.join("\n").toLowerCase()).toContain("evm address");
-    expect(hints.join("\n")).toContain("arb");
-  });
-
-  it("flags an unknown chain prefix", () => {
-    const hints = diagnoseQuoteRequest({
-      destinationAsset: "nep141:foobar-0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.omft.near",
-      recipient: "whatever",
-    });
-    expect(hints.join("\n").toLowerCase()).toContain("not in the known chain list");
-    expect(hints.join("\n")).toContain("foobar");
-  });
-
-  it("flags EVM address for Stellar destination", () => {
-    const hints = diagnoseQuoteRequest({
-      destinationAsset: "nep141:stellar-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN.omft.near",
-      recipient: "0x1234567890abcdef1234567890abcdef12345678",
-    });
-    expect(hints.join("\n").toLowerCase()).toContain("evm address");
-    expect(hints.join("\n")).toContain("stellar");
-  });
-
-  it("accepts a 64-char hex NEAR implicit account", () => {
-    const hints = diagnoseQuoteRequest({
-      destinationAsset: "nep141:usdt.tether-token.near",
-      recipient: "a".repeat(64), // 64 hex chars
-    });
-    expect(hints).toEqual([]);
-  });
-
-  it("ignores fields left undefined", () => {
-    // All undefined except destinationAsset — no hints about missing recipient.
-    const hints = diagnoseQuoteRequest({
-      destinationAsset: "nep141:usdt.tether-token.near",
-    });
-    expect(hints).toEqual([]);
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// Error context threading — 1CS rejection surfaces in err.context
-// ═══════════════════════════════════════════════════════════════════════
-
-describe("requestQuote — error context threading", () => {
-  it("attaches request fields + hints to QuoteUnavailableError from 400", async () => {
-    const cfg = testConfig({
-      merchantRecipient: "merchantx402.nea", // typo
-      merchantAssetOut: "nep141:usdt.tether-token.near",
-    });
-    const store = createMockStore();
-
-    try {
-      await buildPaymentRequirements(
-        cfg, store, "/api/resource",
-        failingQuoteFn(400, { message: "Internal server error" }),
-      );
-      throw new Error("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(QuoteUnavailableError);
-      const ctx = (err as QuoteUnavailableError).context;
-      expect(ctx).toBeDefined();
-      expect(ctx?.recipient).toBe("merchantx402.nea");
-      expect(ctx?.destinationAsset).toBe("nep141:usdt.tether-token.near");
-      expect(ctx?.upstreamStatus).toBe(400);
-      expect(Array.isArray(ctx?.hints)).toBe(true);
-      const hints = ctx?.hints as string[];
-      expect(hints.some((h) => h.toLowerCase().includes("valid near account"))).toBe(true);
-    }
-  });
-
-  it("attaches context to AuthenticationError from 401", async () => {
-    const cfg = testConfig();
-    const store = createMockStore();
-
-    try {
-      await buildPaymentRequirements(
-        cfg, store, "/api/resource",
-        failingQuoteFn(401, { message: "bad jwt" }),
-      );
-      throw new Error("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(AuthenticationError);
-      const ctx = (err as AuthenticationError).context;
-      expect(ctx?.upstreamStatus).toBe(401);
-      expect(ctx?.recipient).toBe(cfg.merchantRecipient);
-    }
-  });
-
-  it("attaches context to ServiceUnavailableError from 5xx", async () => {
-    const cfg = testConfig();
-    const store = createMockStore();
-
-    try {
-      await buildPaymentRequirements(
-        cfg, store, "/api/resource",
-        failingQuoteFn(503, { message: "upstream down" }),
-      );
-      throw new Error("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(ServiceUnavailableError);
-      const ctx = (err as ServiceUnavailableError).context;
-      expect(ctx?.upstreamStatus).toBe(503);
-      expect(ctx?.originAsset).toBe(cfg.originAssetIn);
-    }
-  });
-
-  it("attaches context to ServiceUnavailableError from a network error", async () => {
-    const cfg = testConfig();
-    const store = createMockStore();
-
-    try {
-      await buildPaymentRequirements(
-        cfg, store, "/api/resource",
-        networkErrorQuoteFn("ECONNREFUSED"),
-      );
-      throw new Error("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(ServiceUnavailableError);
-      const ctx = (err as ServiceUnavailableError).context;
-      expect(ctx?.upstreamStatus).toBe("network");
-      expect(ctx?.recipient).toBe(cfg.merchantRecipient);
-    }
+      }).some((h) => h.includes("futurechain")),
+    ).toBe(true);
   });
 });

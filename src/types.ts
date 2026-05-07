@@ -95,6 +95,39 @@ export type OneClickStatus =
   | "REFUNDED";
 
 // ═══════════════════════════════════════════════════════════════════════
+// Swap-as-resource buyer inputs
+//
+// The settlement receipt is carried on the `PAYMENT-RESPONSE` HTTP header's
+// `extensions.crossChain` field — see {@link CrossChainSettlementExtra}
+// further down — not in a separate body type. (See D14 in
+// implementation_plan.md for the design decision.) The 200 body is `{}`.
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Buyer-supplied parameters arriving as query string on `GET /api/swap`.
+ *
+ * The Zod validator in {@link ../http/swap-input.js} parses raw `req.query`
+ * into this shape; the quote engine reads these fields when building the
+ * 1CS `EXACT_INPUT` quote request.
+ */
+export interface SwapRequestInput {
+  /** Chain prefix the buyer wants to receive on, e.g. `"near"`, `"arbitrum"`, `"solana"`. */
+  destinationChain: string;
+  /** 1CS asset ID, e.g. `"nep141:..."`. */
+  destinationAsset: string;
+  /** Buyer's recipient on the destination chain. Format depends on chain. */
+  destinationAddress: string;
+  /** Exact origin amount in smallest unit (digit-only string for BigInt parsing). */
+  amountIn: string;
+  /**
+   * Buyer's refund target on the origin chain (EVM address). Optional —
+   * when omitted the gateway falls back to `cfg.gatewayRefundAddress`
+   * and the operator handles forwarding manually.
+   */
+  refundAddress?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Internal swap lifecycle
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -126,6 +159,20 @@ export type SwapPhase =
 export interface SwapState {
   /** 1CS deposit address — also the primary key in the store. */
   depositAddress: string;
+
+  /**
+   * Buyer-supplied destination parameters captured at quote time. Required —
+   * every state in this service is a swap state. Used by the receipt
+   * builder and by recovery-on-restart to remember the buyer's intent.
+   */
+  swapInputs: SwapRequestInput;
+
+  /**
+   * Operator margin (basis points) snapshot at quote time. Persisted so
+   * the receipt builder can compute the fee amount even if the operator
+   * later edits `OPERATOR_MARGIN_BPS` between quote and settlement.
+   */
+  operatorMarginBps: number;
 
   /**
    * Full 1CS quote response (contains pricing, deadline, correlation ID).
@@ -298,18 +345,53 @@ export interface SettlementResponseRecord {
 }
 
 /**
- * Cross-chain settlement details included in the `extra` field of
- * the `PAYMENT-RESPONSE` header when a 1CS swap completes.
+ * Cross-chain settlement receipt, carried in the `extensions.crossChain`
+ * field of the `PAYMENT-RESPONSE` header when a 1CS swap settles.
+ *
+ * This is the on-the-wire receipt for the swap-as-resource service: every
+ * conforming x402 client / indexer / explorer can consume it via the
+ * standard `extensions` extensibility hook without route-specific handling.
+ * The 200 response body is `{}`.
+ *
+ * Fields are optional where the underlying 1CS `swapDetails` may not
+ * populate them (e.g. mid-flight observations or partial-data races); the
+ * settler builds the richest receipt the available data supports.
  */
 export interface CrossChainSettlementExtra {
   settlementType: "crosschain-1cs";
   /** Transaction hash(es) on the destination chain, from 1CS swapDetails. */
   destinationTxHashes?: Array<{ hash: string; explorerUrl: string }>;
+  /** Chain prefix (e.g. `"near"`, `"arbitrum"`) extracted from the asset ID. */
   destinationChain?: string;
-  destinationAmount?: string;
+  /**
+   * Buyer's recipient on the destination chain — echo of
+   * `state.swapInputs.destinationAddress`. Surfaced so explorers can link
+   * directly to the recipient without parsing the destination tx.
+   */
+  destinationRecipient?: string;
+  /** 1CS asset ID actually delivered (echo of `state.swapInputs.destinationAsset`). */
   destinationAsset?: string;
+  /** Smallest-unit destination amount actually received (from `swapDetails.amountOut`). */
+  destinationAmount?: string;
+  /** Human-readable destination amount (e.g. `"9.985"`), when 1CS reports it. */
+  destinationAmountFormatted?: string;
+  /** USD value of the destination amount, when 1CS reports it. */
+  destinationAmountUsd?: string;
+  /** Realised slippage from 1CS, when available. */
+  slippage?: number;
+  /**
+   * Operator margin charged on top of the 1CS-quoted `amountIn`. Surfaced
+   * here so the buyer can independently verify the breakdown they saw in
+   * the 402's `extra.crossChain.operatorFee`.
+   */
+  operatorFee?: {
+    bps: number;
+    amount: string;
+    currency: string;
+  };
+  /** 1CS execution status — primary terminal/non-terminal indicator. */
   swapStatus: OneClickStatus;
-  /** 1CS correlation ID for debugging / explorer lookup. */
+  /** 1CS correlation ID for support / explorer lookup. */
   correlationId?: string;
 }
 
@@ -321,8 +403,9 @@ export interface CrossChainSettlementExtra {
  * `exact` scheme ignore it and continue to sign using the sibling keys
  * `extra.name`, `extra.version`, and the top-level `asset` / `network`.
  * Clients that want to display richer UX (fees, expected destination
- * amount, refund destination, support IDs) opt in by checking
- * `extra.crossChain?.protocol === "1cs"` and reading the fields below.
+ * amount, refund destination, operator fee breakdown, support IDs) opt
+ * in by checking `extra.crossChain?.protocol === "1cs"` and reading the
+ * fields below.
  *
  * **Never used for EIP-712 signing or on-chain verification.** The signing
  * domain comes exclusively from `extra.name`, `extra.version`, `asset`,
@@ -338,9 +421,9 @@ export interface CrossChainQuoteExtra {
   protocol: "1cs";
   /** 1CS quote correlation ID — use when contacting support. */
   quoteId: string;
-  /** Merchant recipient on the destination chain. */
+  /** Buyer's recipient on the destination chain (echoes `swapInputs.destinationAddress`). */
   destinationRecipient: string;
-  /** 1CS asset ID the merchant receives. */
+  /** 1CS asset ID the buyer receives (echoes `swapInputs.destinationAsset`). */
   destinationAsset: string;
   /** Expected destination amount (smallest unit of the destination asset). */
   amountOut: string;
@@ -352,13 +435,29 @@ export interface CrossChainQuoteExtra {
   amountInUsd: string;
   /** Fee charged if the deposit is refunded. Optional (chain-dependent). */
   refundFee?: string;
-  /** Address that receives refunds from failed swaps. */
+  /**
+   * Address that receives refunds from failed swaps — either the buyer's
+   * `swapInputs.refundAddress` (when supplied) or the gateway fallback.
+   */
   refundTo: string;
   /**
    * Memo required by certain destination chains (Stellar, XRP,
    * Cosmos-family). Omitted when the chain does not require one.
    */
   depositMemo?: string;
+  /**
+   * Operator margin breakdown — what the operator earns on top of the
+   * 1CS-quoted `amountIn`. The buyer can compare against the unbiased
+   * 1CS quote (`quoteId`-tagged in their tooling) to see the markup.
+   */
+  operatorFee: {
+    /** Margin in basis points (snapshot of `cfg.operatorMarginBps` at quote time). */
+    bps: number;
+    /** Margin amount in the origin asset's smallest unit. */
+    amount: string;
+    /** Currency the margin is denominated in (e.g. `"USDC"`). */
+    currency: string;
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -407,6 +506,21 @@ export class GatewayError extends Error {
   ) {
     super(message);
     this.name = "GatewayError";
+  }
+}
+
+/**
+ * Buyer-supplied input failed runtime validation (Zod schema or chain-format
+ * cross-check) — gateway returns 400 with structured field-level details.
+ *
+ * Used for the swap route only: when the buyer's destination/recipient/asset
+ * combination is structurally wrong before we even contact 1CS. Distinct
+ * from `QuoteUnavailableError` (503) which is reserved for 1CS-side issues.
+ */
+export class InvalidInputError extends GatewayError {
+  constructor(message: string, context?: ErrorContext) {
+    super(message, "INVALID_INPUT", 400, context);
+    this.name = "InvalidInputError";
   }
 }
 

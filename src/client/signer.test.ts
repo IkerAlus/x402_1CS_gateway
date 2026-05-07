@@ -1,10 +1,10 @@
 /**
  * Tests for the client-side signer module.
  *
- * Verifies that EIP-3009 and Permit2 signing produce payloads that
- * pass the gateway's verification logic. Uses real EIP-712 signatures
- * (ethers.Wallet.signTypedData) and round-trips them through
- * ethers.verifyTypedData.
+ * Verifies that EIP-3009 and Permit2 signing produce payloads that pass
+ * the gateway's verification logic. Uses real EIP-712 signatures
+ * (`ethers.Wallet.signTypedData`) and round-trips them through
+ * `ethers.verifyTypedData`.
  *
  * @module client/signer.test
  */
@@ -20,13 +20,10 @@ import type { PaymentRequirements, EIP3009SignedPayload, Permit2SignedPayload } 
 // Fixtures
 // ═══════════════════════════════════════════════════════════════════════
 
-const BUYER_PRIVATE_KEY =
-  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const BUYER_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const wallet = new ethers.Wallet(BUYER_PRIVATE_KEY);
 
-function eip3009Requirements(
-  overrides: Partial<PaymentRequirements> = {},
-): PaymentRequirements {
+function eip3009Requirements(overrides: Partial<PaymentRequirements> = {}): PaymentRequirements {
   return {
     scheme: "exact",
     network: "eip155:8453",
@@ -34,179 +31,144 @@ function eip3009Requirements(
     amount: "1050000",
     payTo: "0x7a16fF8270133F063aAb6C9977183D9e72835428",
     maxTimeoutSeconds: 300,
-    extra: {
-      name: "USD Coin",
-      version: "2",
-      assetTransferMethod: "eip3009",
-    },
+    extra: { name: "USD Coin", version: "2", assetTransferMethod: "eip3009" },
     ...overrides,
   };
 }
 
-function permit2Requirements(
-  overrides: Partial<PaymentRequirements> = {},
-): PaymentRequirements {
+function permit2Requirements(overrides: Partial<PaymentRequirements> = {}): PaymentRequirements {
   return {
     ...eip3009Requirements(),
-    extra: {
-      name: "USD Coin",
-      version: "2",
-      assetTransferMethod: "permit2",
-    },
+    extra: { name: "USD Coin", version: "2", assetTransferMethod: "permit2" },
     ...overrides,
   };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Tests
+// extractChainId — CAIP-2 parsing
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("extractChainId", () => {
-  it("extracts chain ID from CAIP-2 string", () => {
+  it("parses eip155:<chainId> and rejects non-eip155 / malformed inputs", () => {
     expect(extractChainId("eip155:8453")).toBe(8453);
     expect(extractChainId("eip155:1")).toBe(1);
     expect(extractChainId("eip155:42161")).toBe(42161);
-  });
 
-  it("rejects non-eip155 networks", () => {
     expect(() => extractChainId("solana:mainnet")).toThrow("Unsupported network format");
-  });
-
-  it("rejects malformed strings", () => {
     expect(() => extractChainId("eip155")).toThrow("Unsupported network format");
     expect(() => extractChainId("eip155:abc")).toThrow("Invalid chain ID");
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// signEIP3009 — produces a verifiable signature; nonce is unique per call
+// ═══════════════════════════════════════════════════════════════════════
+
 describe("signEIP3009", () => {
-  it("produces a valid EIP-712 signature that recovers to the wallet address", async () => {
-    const requirements = eip3009Requirements();
-    const payload = await signEIP3009(wallet, requirements);
+  it("produces a payload that round-trips through ethers.verifyTypedData with the correct authorization fields", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const requirements = eip3009Requirements({ maxTimeoutSeconds: 600 });
+    const payload = await signEIP3009(wallet, requirements, "/api/swap");
+    const signed = payload.payload as EIP3009SignedPayload;
 
     expect(payload.x402Version).toBe(2);
     expect(payload.accepted).toEqual(requirements);
+    expect(payload.resource?.url).toBe("/api/swap");
 
-    const signed = payload.payload as EIP3009SignedPayload;
     expect(signed.signature).toMatch(/^0x[a-fA-F0-9]{130}$/);
     expect(signed.authorization.from).toBe(wallet.address);
     expect(signed.authorization.to).toBe(requirements.payTo);
     expect(signed.authorization.value).toBe(requirements.amount);
+    expect(signed.authorization.validAfter).toBe("0");
 
-    // Verify the signature round-trips
-    const domain = {
-      name: requirements.extra.name,
-      version: requirements.extra.version,
-      chainId: 8453,
-      verifyingContract: requirements.asset,
-    };
-    const types = {
-      TransferWithAuthorization: authorizationTypes.TransferWithAuthorization.map(
-        (f) => ({ name: f.name, type: f.type }),
-      ),
-    };
+    const validBefore = Number(signed.authorization.validBefore);
+    expect(validBefore).toBeGreaterThanOrEqual(nowSec + 590); // ±10s tolerance
+    expect(validBefore).toBeLessThanOrEqual(nowSec + 610);
+
     const recovered = ethers.verifyTypedData(
-      domain,
-      types,
+      {
+        name: requirements.extra.name,
+        version: requirements.extra.version,
+        chainId: 8453,
+        verifyingContract: requirements.asset,
+      },
+      {
+        TransferWithAuthorization: authorizationTypes.TransferWithAuthorization.map((f) => ({
+          name: f.name,
+          type: f.type,
+        })),
+      },
       signed.authorization,
       signed.signature,
     );
     expect(recovered.toLowerCase()).toBe(wallet.address.toLowerCase());
   });
 
-  it("sets validAfter to 0 and validBefore based on maxTimeoutSeconds", async () => {
-    const nowSec = Math.floor(Date.now() / 1000);
-    const requirements = eip3009Requirements({ maxTimeoutSeconds: 600 });
-    const payload = await signEIP3009(wallet, requirements);
-    const signed = payload.payload as EIP3009SignedPayload;
-
-    expect(signed.authorization.validAfter).toBe("0");
-    const validBefore = Number(signed.authorization.validBefore);
-    expect(validBefore).toBeGreaterThanOrEqual(nowSec + 590); // small tolerance
-    expect(validBefore).toBeLessThanOrEqual(nowSec + 610);
-  });
-
-  it("generates a unique nonce for each signing", async () => {
+  it("generates a unique nonce per call (security-critical: nonce reuse → replay)", async () => {
     const requirements = eip3009Requirements();
-    const p1 = await signEIP3009(wallet, requirements);
-    const p2 = await signEIP3009(wallet, requirements);
-
-    const nonce1 = (p1.payload as EIP3009SignedPayload).authorization.nonce;
-    const nonce2 = (p2.payload as EIP3009SignedPayload).authorization.nonce;
-    expect(nonce1).not.toBe(nonce2);
+    const a = (await signEIP3009(wallet, requirements)).payload as EIP3009SignedPayload;
+    const b = (await signEIP3009(wallet, requirements)).payload as EIP3009SignedPayload;
+    expect(a.authorization.nonce).not.toBe(b.authorization.nonce);
   });
 
-  it("includes resource URL when provided", async () => {
-    const payload = await signEIP3009(
-      wallet,
-      eip3009Requirements(),
-      "/api/premium",
-    );
-    expect(payload.resource?.url).toBe("/api/premium");
-  });
-
-  it("omits resource when not provided", async () => {
-    const payload = await signEIP3009(wallet, eip3009Requirements());
-    expect(payload.resource).toBeUndefined();
+  it("omits the resource field when no URL is provided", async () => {
+    expect((await signEIP3009(wallet, eip3009Requirements())).resource).toBeUndefined();
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// signPermit2 — produces a verifiable Permit2-witness signature
+// ═══════════════════════════════════════════════════════════════════════
+
 describe("signPermit2", () => {
-  it("produces a valid Permit2 signature that recovers to the wallet address", async () => {
+  it("produces a payload that round-trips through ethers.verifyTypedData with witness.to = payTo", async () => {
     const requirements = permit2Requirements();
     const payload = await signPermit2(wallet, requirements);
+    const signed = payload.payload as Permit2SignedPayload;
 
     expect(payload.x402Version).toBe(2);
-    expect(payload.accepted).toEqual(requirements);
-
-    const signed = payload.payload as Permit2SignedPayload;
     expect(signed.signature).toMatch(/^0x[a-fA-F0-9]{130}$/);
     expect(signed.permit2Authorization.from).toBe(wallet.address);
     expect(signed.permit2Authorization.permitted.token).toBe(requirements.asset);
     expect(signed.permit2Authorization.permitted.amount).toBe(requirements.amount);
     expect(signed.permit2Authorization.witness.to).toBe(requirements.payTo);
 
-    // Verify the signature round-trips
-    const domain = {
-      name: "Permit2",
-      verifyingContract: PERMIT2_ADDRESS,
-      chainId: 8453,
-    };
     const types: Record<string, Array<{ name: string; type: string }>> = {};
     for (const [key, fields] of Object.entries(permit2WitnessTypes)) {
-      types[key] = fields.map((f: { name: string; type: string }) => ({
-        name: f.name,
-        type: f.type,
-      }));
+      types[key] = fields.map((f: { name: string; type: string }) => ({ name: f.name, type: f.type }));
     }
-    const message = {
-      permitted: signed.permit2Authorization.permitted,
-      spender: signed.permit2Authorization.spender,
-      nonce: signed.permit2Authorization.nonce,
-      deadline: signed.permit2Authorization.deadline,
-      witness: signed.permit2Authorization.witness,
-    };
-    const recovered = ethers.verifyTypedData(domain, types, message, signed.signature);
+    const recovered = ethers.verifyTypedData(
+      { name: "Permit2", verifyingContract: PERMIT2_ADDRESS, chainId: 8453 },
+      types,
+      {
+        permitted: signed.permit2Authorization.permitted,
+        spender: signed.permit2Authorization.spender,
+        nonce: signed.permit2Authorization.nonce,
+        deadline: signed.permit2Authorization.deadline,
+        witness: signed.permit2Authorization.witness,
+      },
+      signed.signature,
+    );
     expect(recovered.toLowerCase()).toBe(wallet.address.toLowerCase());
   });
 });
 
-describe("signPayment (dispatch)", () => {
-  it("dispatches to signEIP3009 when assetTransferMethod is eip3009", async () => {
-    const payload = await signPayment(wallet, eip3009Requirements());
-    expect((payload.payload as EIP3009SignedPayload).authorization).toBeDefined();
-  });
+// ═══════════════════════════════════════════════════════════════════════
+// signPayment — dispatches by assetTransferMethod
+// ═══════════════════════════════════════════════════════════════════════
 
-  it("dispatches to signPermit2 when assetTransferMethod is permit2", async () => {
-    const payload = await signPayment(wallet, permit2Requirements());
-    expect((payload.payload as Permit2SignedPayload).permit2Authorization).toBeDefined();
-  });
+describe("signPayment", () => {
+  it("dispatches to EIP-3009 vs Permit2 by assetTransferMethod and rejects unknown methods", async () => {
+    expect(
+      ((await signPayment(wallet, eip3009Requirements())).payload as EIP3009SignedPayload).authorization,
+    ).toBeDefined();
+    expect(
+      ((await signPayment(wallet, permit2Requirements())).payload as Permit2SignedPayload).permit2Authorization,
+    ).toBeDefined();
 
-  it("throws for unsupported transfer method", async () => {
-    const bad = eip3009Requirements({
+    const unknown = eip3009Requirements({
       extra: { name: "X", version: "1", assetTransferMethod: "unknown" as any },
     });
-    await expect(signPayment(wallet, bad)).rejects.toThrow(
-      "Unsupported asset transfer method",
-    );
+    await expect(signPayment(wallet, unknown)).rejects.toThrow("Unsupported asset transfer method");
   });
 });

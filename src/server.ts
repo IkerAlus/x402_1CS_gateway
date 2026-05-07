@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   const cfg = loadConfigFromEnv();
   console.log(
     `[x402-1CS] Config OK — network=${cfg.originNetwork}, ` +
-      `merchant=${cfg.merchantRecipient}, asset=${cfg.merchantAssetOut}`,
+      `originAsset=${cfg.originAssetIn}, operatorMarginBps=${cfg.operatorMarginBps}`,
   );
 
   // ── 2. Initialize state store ──────────────────────────────────────
@@ -104,14 +104,17 @@ async function main(): Promise<void> {
     );
   }
 
-  const deps: MiddlewareDeps = {
+  // Base deps shared across every route — each mounted route adds its
+  // own `route` field so the middleware can validate the buyer's query
+  // against that route's input schema (Phase 5 / Phase 10).
+  const baseDeps: Omit<MiddlewareDeps, "route"> = {
     cfg,
     store,
     chainReader,
     broadcastFn,
     depositNotifyFn,
     statusPollFn,
-    resourceDescription: "x402-1CS protected resource",
+    resourceDescription: "x402-1CS swap service",
     quoteLimiter: rateLimiting.quoteLimiter,
     settlementLimiter: rateLimiting.settlementLimiter,
   };
@@ -220,8 +223,12 @@ async function main(): Promise<void> {
   // followed by its handler. The same registry drives `/openapi.json`
   // and `/.well-known/x402` above, so adding a new paid endpoint is
   // one registry entry — no edits here.
-  const x402Middleware = createX402Middleware(deps);
+  //
+  // The middleware is built *per route* so it can carry the route's
+  // Zod input validator and JSON Schema (used to parse the buyer's
+  // query string into a `SwapRequestInput` before quoting).
   for (const route of protectedRoutes) {
+    const x402Middleware = createX402Middleware({ ...baseDeps, route });
     const method = route.method.toLowerCase() as "get" | "post";
     app[method](route.path, x402Middleware, route.handler);
   }

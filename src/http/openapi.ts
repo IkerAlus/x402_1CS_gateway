@@ -1,7 +1,7 @@
 /**
  * `/openapi.json` document builder.
  *
- * This is x402scan's **primary** discovery surface — it's checked before
+ * x402scan's **primary** discovery surface — checked before
  * `/.well-known/x402`, so the richness of this document determines how
  * well the gateway is indexed. Key x402-specific fields:
  *
@@ -10,12 +10,15 @@
  *  - `x-discovery.ownershipProofs`                          (x402scan ext.)
  *  - `x-crosschain`           — protocol + schema pointer   (gateway ext.)
  *  - `components.securitySchemes.x402`                      (stock OpenAPI)
- *  - `components.schemas.CrossChainQuoteExtra`              (informational shape)
+ *  - `components.schemas.CrossChainQuoteExtra`              (informational shape on 402)
+ *  - `components.schemas.CrossChainSettlementExtra`         (receipt shape on 200)
  *  - Per operation:
  *      - `security: [{ x402: [] }]`                         (stock OpenAPI)
- *      - `x-payment-info: { protocols: "x402", ...pricing }` (x402scan ext.)
- *      - `requestBody` driven by `route.inputSchema`
- *      - `responses.200` driven by `route.outputSchema`
+ *      - `x-payment-info: { protocols: "x402", mode: "swap", currency, min, max, operatorMarginBps }`
+ *      - `parameters: [{ in: "query", ... }]`               (driven by `route.inputSchema`)
+ *      - `responses.200` with empty body schema + `headers.PAYMENT-RESPONSE`
+ *        that references `CrossChainSettlementExtra` — the receipt lives in the
+ *        header, not the body (D14 in implementation_plan.md)
  *      - `responses.402` documenting the PAYMENT-REQUIRED header (and its
  *        decoded `accepts[0].extra.crossChain` informational block)
  *
@@ -89,6 +92,7 @@ export const CROSS_CHAIN_QUOTE_SCHEMA: Readonly<Record<string, unknown>> =
       "amountOutUsd",
       "amountInUsd",
       "refundTo",
+      "operatorFee",
     ],
     properties: {
       protocol: {
@@ -102,11 +106,13 @@ export const CROSS_CHAIN_QUOTE_SCHEMA: Readonly<Record<string, unknown>> =
       },
       destinationRecipient: {
         type: "string",
-        description: "Merchant recipient on the destination chain.",
+        description:
+          "Buyer's recipient on the destination chain (echo of `swapInputs.destinationAddress`).",
       },
       destinationAsset: {
         type: "string",
-        description: "1CS asset ID the merchant receives.",
+        description:
+          "1CS asset ID the buyer receives (echo of `swapInputs.destinationAsset`).",
       },
       amountOut: {
         type: "string",
@@ -131,13 +137,124 @@ export const CROSS_CHAIN_QUOTE_SCHEMA: Readonly<Record<string, unknown>> =
       },
       refundTo: {
         type: "string",
-        description: "Address that receives refunds from failed swaps.",
+        description:
+          "Address that receives refunds from failed swaps — buyer's `refundAddress` when supplied, else the gateway fallback.",
       },
       depositMemo: {
         type: "string",
         description:
           "Memo required by certain destination chains (Stellar, XRP, " +
           "Cosmos-family). Omitted when the chain does not require one.",
+      },
+      operatorFee: {
+        type: "object",
+        required: ["bps", "amount", "currency"],
+        description:
+          "Operator margin charged on top of the 1CS-quoted `amountIn`. Surfaced transparently so the buyer can see exactly what they're paying.",
+        properties: {
+          bps: { type: "integer", minimum: 0, maximum: 1000 },
+          amount: {
+            type: "string",
+            description: "Margin amount in the origin asset's smallest unit.",
+          },
+          currency: { type: "string" },
+        },
+      },
+    },
+  });
+
+/**
+ * JSON Schema for the swap settlement receipt carried in
+ * `PAYMENT-RESPONSE.extensions.crossChain` on a successful 200 response.
+ * Advertised at `components.schemas.CrossChainSettlementExtra` so x402scan
+ * and other indexers can discover the receipt shape without probing a live
+ * settlement.
+ *
+ * Mirrors {@link import("../types.js").CrossChainSettlementExtra} 1:1.
+ * Receipt-as-header is a deliberate design choice (D14 in
+ * `implementation_plan.md`) — the body is `{}` and `extensions.crossChain`
+ * is the standardized x402 carrier for protocol-specific settlement metadata.
+ */
+export const CROSS_CHAIN_SETTLEMENT_SCHEMA: Readonly<Record<string, unknown>> =
+  Object.freeze({
+    type: "object",
+    description:
+      "Cross-chain settlement receipt carried in the PAYMENT-RESPONSE header's " +
+      "extensions.crossChain field on the 200 response. The 200 body is `{}`; " +
+      "this object is the receipt.",
+    required: ["settlementType", "swapStatus"],
+    properties: {
+      settlementType: {
+        type: "string",
+        enum: ["crosschain-1cs"],
+        description: "Settlement protocol discriminator.",
+      },
+      destinationTxHashes: {
+        type: "array",
+        description: "Destination-chain tx hashes reported by 1CS.",
+        items: {
+          type: "object",
+          required: ["hash", "explorerUrl"],
+          properties: {
+            hash: { type: "string" },
+            explorerUrl: { type: "string" },
+          },
+        },
+      },
+      destinationChain: {
+        type: "string",
+        description: "Chain prefix (e.g. \"near\", \"arbitrum\") extracted from the asset ID.",
+      },
+      destinationRecipient: {
+        type: "string",
+        description: "Buyer's recipient on the destination chain (echo of swapInputs.destinationAddress).",
+      },
+      destinationAsset: {
+        type: "string",
+        description: "1CS asset ID actually delivered.",
+      },
+      destinationAmount: {
+        type: "string",
+        description: "Smallest-unit amount actually received (from swapDetails.amountOut).",
+      },
+      destinationAmountFormatted: {
+        type: "string",
+        description: "Human-readable destination amount, when 1CS reports it.",
+      },
+      destinationAmountUsd: {
+        type: "string",
+        description: "USD value of the destination amount, when 1CS reports it.",
+      },
+      slippage: {
+        type: "number",
+        description: "Realised slippage from 1CS, when available.",
+      },
+      operatorFee: {
+        type: "object",
+        required: ["bps", "amount", "currency"],
+        description: "Operator margin breakdown — same shape as the 402 envelope's operatorFee.",
+        properties: {
+          bps: { type: "integer", minimum: 0, maximum: 1000 },
+          amount: { type: "string" },
+          currency: { type: "string" },
+        },
+      },
+      swapStatus: {
+        type: "string",
+        enum: [
+          "KNOWN_DEPOSIT_TX",
+          "PENDING_DEPOSIT",
+          "INCOMPLETE_DEPOSIT",
+          "PROCESSING",
+          "SUCCESS",
+          "FAILED",
+          "REFUNDED",
+        ],
+        description: "1CS terminal/non-terminal status.",
+      },
+      correlationId: {
+        type: "string",
+        description: "1CS correlation ID for support / explorer lookup.",
       },
     },
   });
@@ -198,18 +315,15 @@ export function buildOpenApiDocument(
     },
     "x-crosschain": {
       protocol: "1cs",
-      schema: "#/components/schemas/CrossChainQuoteExtra",
+      quoteSchema: "#/components/schemas/CrossChainQuoteExtra",
+      settlementSchema: "#/components/schemas/CrossChainSettlementExtra",
       description:
-        "Every 402 envelope carries an informational `accepts[0].extra.crossChain` " +
-        "block (quote ID, destination amount, refund details, optional deposit memo). " +
-        "Full shape in `schema` above; clients that only speak the EVM `exact` " +
-        "scheme can ignore it entirely.",
+        "Every 402 envelope carries `accepts[0].extra.crossChain` (CrossChainQuoteExtra: " +
+        "quote ID, destination amount, refund details, operator fee). Every 200 carries a " +
+        "settlement receipt at `PAYMENT-RESPONSE.extensions.crossChain` (CrossChainSettlementExtra). " +
+        "Clients that only speak the EVM `exact` scheme can ignore both.",
     },
-    // `paths` before `components` follows the OpenAPI 3.x spec's own
-    // example ordering (openapi → info → servers → paths → components)
-    // and keeps the human-readable route list near the top of the JSON,
-    // above the bulky supporting-schema block.
-    paths: buildPaths(routes),
+    paths: buildPaths(routes, cfg),
     components: {
       securitySchemes: {
         x402: {
@@ -221,6 +335,7 @@ export function buildOpenApiDocument(
       },
       schemas: {
         CrossChainQuoteExtra: CROSS_CHAIN_QUOTE_SCHEMA,
+        CrossChainSettlementExtra: CROSS_CHAIN_SETTLEMENT_SCHEMA,
       },
     },
   };
@@ -234,35 +349,32 @@ export function buildOpenApiDocument(
 
 function buildPaths(
   routes: readonly ProtectedRoute[],
+  cfg: GatewayConfig,
 ): Record<string, Record<string, unknown>> {
   const paths: Record<string, Record<string, unknown>> = {};
 
   for (const route of routes) {
     // Multiple methods on the same path share a single path item.
     const pathItem = paths[route.path] ?? {};
-    pathItem[route.method.toLowerCase()] = buildOperation(route);
+    pathItem[route.method.toLowerCase()] = buildOperation(route, cfg);
     paths[route.path] = pathItem;
   }
 
   return paths;
 }
 
-function buildOperation(route: ProtectedRoute): Record<string, unknown> {
+function buildOperation(
+  route: ProtectedRoute,
+  cfg: GatewayConfig,
+): Record<string, unknown> {
   const operation: Record<string, unknown> = {
     summary: route.summary,
-    ...(route.description ? { description: route.description } : {}),
+    description: route.description,
     security: [{ x402: [] }],
-    "x-payment-info": buildPaymentInfo(route.pricing),
+    "x-payment-info": buildPaymentInfo(route.pricing, cfg),
   };
 
-  // Attach request body when the route defines an input schema. We
-  // advertise JSON for POST and query-style usage for GET (by convention
-  // GET routes are parameterless here; the schema is still useful for
-  // the Bazaar `inputSchema` field if/when that deferred integration
-  // lands — see the "Non-Goals" section of docs/X402SCAN_PLAN.md).
-  if (route.inputSchema) {
-    attachRequestShape(operation, route.method, route.inputSchema);
-  }
+  attachRequestShape(operation, route.method, route.inputSchema);
 
   operation.responses = buildResponses(route);
 
@@ -270,88 +382,140 @@ function buildOperation(route: ProtectedRoute): Record<string, unknown> {
 }
 
 /**
- * Translate the registry's `RoutePricing` (union type) into the
- * x402scan-compatible `x-payment-info` block.
+ * Translate the registry's `RoutePricing` into the x402scan-compatible
+ * `x-payment-info` block.
  *
- * Output shape per x402scan DISCOVERY.md:
- *  - fixed:   `{ protocols: "x402", mode: "fixed",   currency, amount }`
- *  - dynamic: `{ protocols: "x402", mode: "dynamic", currency, min, max }`
+ * Output shape: `{ protocols: "x402", mode: "swap", currency, min, max,
+ * operatorMarginBps }`. The `operatorMarginBps` value comes from the
+ * service-level config (not per-route) since this is a single-product
+ * service; surfacing it here lets x402scan and integrators see the
+ * markup the operator charges without probing a live 402.
  */
-function buildPaymentInfo(pricing: RoutePricing): Record<string, unknown> {
-  if (pricing.mode === "fixed") {
-    return {
-      protocols: "x402",
-      mode: "fixed",
-      currency: pricing.currency,
-      amount: pricing.amount,
-    };
-  }
+function buildPaymentInfo(
+  pricing: RoutePricing,
+  cfg: GatewayConfig,
+): Record<string, unknown> {
   return {
     protocols: "x402",
-    mode: "dynamic",
+    mode: "swap",
     currency: pricing.currency,
     min: pricing.min,
     max: pricing.max,
+    operatorMarginBps: cfg.operatorMarginBps,
   };
 }
 
 /**
  * Attach the input shape to an operation.
  *
- * - For POST: an `application/json` `requestBody` whose schema is the
- *   registry's `inputSchema`.
- * - For GET: attach nothing at the operation level (GETs in the current
- *   registry are parameterless); a future Bazaar `info.inputSchema` on
- *   the 402 challenge (deferred integration, see docs/X402SCAN_PLAN.md)
- *   is where the input shape will live.
+ * - For GET: emit `parameters: [{ in: "query", ... }]` — one entry per
+ *   top-level field of the route's flat `inputSchema`.
+ * - For POST: emit an `application/json` `requestBody` whose schema is
+ *   the registry's `inputSchema`.
+ *
+ * The swap route is GET (D8 in implementation_plan.md) — query params
+ * carry the buyer's destination. POST support is retained for
+ * forward-compatibility if a future paid route needs body input.
  */
 function attachRequestShape(
   operation: Record<string, unknown>,
   method: ProtectedMethod,
   inputSchema: Record<string, unknown>,
 ): void {
-  if (method === "POST") {
-    operation.requestBody = {
-      required: true,
-      content: {
-        "application/json": {
-          schema: inputSchema,
-        },
-      },
-    };
+  if (method === "GET") {
+    const parameters = jsonSchemaToQueryParameters(inputSchema);
+    if (parameters.length > 0) {
+      operation.parameters = parameters;
+    }
+    return;
   }
-  // For GET, do nothing — query parameters would be `parameters: [...]`
-  // but the v1 registry has no parameterised GETs, and emitting an
-  // empty array is noise.
+  // POST
+  operation.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: inputSchema,
+      },
+    },
+  };
+}
+
+/**
+ * Walk a flat object JSON Schema and emit one OpenAPI `parameters` entry
+ * per top-level property. Scoped to flat schemas — the swap route's input
+ * is intentionally flat for query-string carriage. Nested objects in the
+ * schema would be silently flattened to their top key here, so don't use
+ * this on hierarchical inputs without revisiting.
+ */
+export function jsonSchemaToQueryParameters(
+  schema: Record<string, unknown>,
+): Array<Record<string, unknown>> {
+  if (schema.type !== "object") return [];
+  const properties = schema.properties as
+    | Record<string, Record<string, unknown>>
+    | undefined;
+  if (!properties) return [];
+
+  const required = new Set(
+    Array.isArray(schema.required) ? (schema.required as string[]) : [],
+  );
+
+  return Object.entries(properties).map(([name, fieldSchema]) => {
+    const param: Record<string, unknown> = {
+      name,
+      in: "query",
+      required: required.has(name),
+      schema: fieldSchema,
+    };
+    if (typeof fieldSchema.description === "string") {
+      param.description = fieldSchema.description;
+    }
+    return param;
+  });
 }
 
 function buildResponses(route: ProtectedRoute): Record<string, unknown> {
   const responses: Record<string, unknown> = {
     "200": {
-      description: "Paid resource response",
-      ...(route.outputSchema
-        ? {
-            content: {
-              "application/json": {
-                schema: route.outputSchema,
-              },
-            },
-          }
-        : {}),
+      description:
+        "Settlement complete. The body is `{}` by design — the swap receipt is " +
+        "carried in the `PAYMENT-RESPONSE` header's `extensions.crossChain` field " +
+        "(CrossChainSettlementExtra). See D14 in implementation_plan.md.",
+      headers: {
+        "PAYMENT-RESPONSE": {
+          description:
+            "Base64-encoded x402 SettleResponse. The `extensions.crossChain` field " +
+            "carries the swap receipt — destination tx hashes, slippage, operator fee.",
+          schema: { type: "string" },
+        },
+      },
+      content: {
+        "application/json": {
+          schema: route.outputSchema,
+        },
+      },
     },
     "402": {
       description:
         "Payment required. The `PAYMENT-REQUIRED` header carries a base64-encoded " +
         "x402 v2 envelope; clients sign an EIP-712 authorization and retry with " +
         "`PAYMENT-SIGNATURE`. Decoded, `accepts[0].extra.crossChain` conforms to " +
-        "CrossChainQuoteExtra — informational metadata about the 1Click Swap; " +
-        "safe to ignore if unused.",
+        "CrossChainQuoteExtra — informational metadata about the 1Click Swap " +
+        "(quote ID, destination amount, refund target, operator fee).",
       headers: {
         "PAYMENT-REQUIRED": {
           description: "Base64-encoded x402 PaymentRequired envelope (v2).",
           schema: { type: "string" },
         },
       },
+    },
+    "400": {
+      description:
+        "Buyer input failed validation. Body: `{ error: \"INVALID_INPUT\", message, details: [{path, message}], correlationId }`.",
+    },
+    "503": {
+      description:
+        "Upstream 1CS service unavailable, authentication failed, deadline too short, or facilitator gas insufficient.",
     },
   };
   return responses;

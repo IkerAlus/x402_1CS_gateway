@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { diagnoseQuoteRequest } from "../payment/quote-engine.js";
 import { validateOwnershipProofs } from "../http/ownership-proof.js";
 
 /**
@@ -7,6 +6,12 @@ import { validateOwnershipProofs } from "../http/ownership-proof.js";
  *
  * Validated at startup — if any required variable is missing or malformed
  * the process exits immediately with a descriptive error.
+ *
+ * This service is a swap-as-resource gateway: the buyer supplies the
+ * destination chain, asset, recipient, and (optionally) refund address
+ * per-request. There are no merchant fields — every settlement routes to
+ * a buyer-supplied address. See `docs/USER_GUIDE.md` for the buyer flow
+ * and `docs/OPERATOR_GUIDE.md` for the operator considerations.
  */
 export const GatewayConfigSchema = z.object({
   // ── 1Click Swap API ────────────────────────────────────────────────
@@ -14,14 +19,6 @@ export const GatewayConfigSchema = z.object({
   oneClickJwt: z.string().min(1, "ONE_CLICK_JWT is required"),
   /** Base URL of the 1CS service. */
   oneClickBaseUrl: z.string().url().default("https://1click.chaindefuser.com"),
-
-  // ── Merchant ───────────────────────────────────────────────────────
-  /** Recipient address/account on the destination chain (e.g. "merchant.near"). */
-  merchantRecipient: z.string().min(1, "MERCHANT_RECIPIENT is required"),
-  /** 1CS asset ID for the asset the merchant wants to receive (e.g. "near:nUSDC"). */
-  merchantAssetOut: z.string().min(1, "MERCHANT_ASSET_OUT is required"),
-  /** Price denominated in the destination asset's smallest unit. */
-  merchantAmountOut: z.string().min(1, "MERCHANT_AMOUNT_OUT is required"),
 
   // ── Origin chain (where the buyer pays) ────────────────────────────
   /** CAIP-2 network identifier, e.g. "eip155:8453" for Base. */
@@ -38,10 +35,30 @@ export const GatewayConfigSchema = z.object({
   // ── Gateway operations ─────────────────────────────────────────────
   /** Private key of the facilitator wallet that broadcasts on-chain txs. */
   facilitatorPrivateKey: z.string().min(1, "FACILITATOR_PRIVATE_KEY is required"),
-  /** EVM address that 1CS sends refunds to when swaps fail. */
+  /**
+   * EVM address that 1CS sends refunds to when a buyer omits `refundAddress`
+   * from their request. The buyer's per-request `refundAddress` always wins
+   * when supplied. See D6 in `implementation_plan.md`.
+   */
   gatewayRefundAddress: z
     .string()
     .regex(/^0x[a-fA-F0-9]{40}$/, "GATEWAY_REFUND_ADDRESS must be a valid EVM address"),
+
+  // ── Operator economics ─────────────────────────────────────────────
+  /**
+   * Operator margin in basis points (30 = 0.3%). Added to the 1CS-quoted
+   * `amountIn` to compute the price the buyer signs for. Surfaced
+   * transparently in `extra.crossChain.operatorFee` on every 402.
+   *
+   * Range: 0–1000 (0% to 10%). `0` is allowed for free / loss-leader
+   * deployments. See D3 in `implementation_plan.md`.
+   */
+  operatorMarginBps: z
+    .number()
+    .int()
+    .min(0, "OPERATOR_MARGIN_BPS must be >= 0")
+    .max(1000, "OPERATOR_MARGIN_BPS must be <= 1000 (10%)")
+    .default(30),
 
   // ── Tuning ─────────────────────────────────────────────────────────
   /** Maximum wall-clock time (ms) spent polling 1CS for a terminal status. */
@@ -86,10 +103,6 @@ export const GatewayConfigSchema = z.object({
    * Full public URL of the gateway, used to emit absolute resource URLs
    * in `/openapi.json` and `/.well-known/x402`. Example:
    * `https://gateway.example.com`.
-   *
-   * Optional during local development; required before registering with
-   * x402scan. When unset, discovery surfaces fall back to relative paths
-   * (or skip emitting them entirely, depending on the route).
    */
   publicBaseUrl: z.string().url().optional(),
   /**
@@ -119,15 +132,13 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Gateway
   const raw = {
     oneClickJwt: env.ONE_CLICK_JWT,
     oneClickBaseUrl: env.ONE_CLICK_BASE_URL ?? undefined,
-    merchantRecipient: env.MERCHANT_RECIPIENT,
-    merchantAssetOut: env.MERCHANT_ASSET_OUT,
-    merchantAmountOut: env.MERCHANT_AMOUNT_OUT,
     originNetwork: env.ORIGIN_NETWORK,
     originAssetIn: env.ORIGIN_ASSET_IN,
     originTokenAddress: env.ORIGIN_TOKEN_ADDRESS,
     originRpcUrls: env.ORIGIN_RPC_URLS?.split(",").map((u) => u.trim()) ?? [],
     facilitatorPrivateKey: env.FACILITATOR_PRIVATE_KEY,
     gatewayRefundAddress: env.GATEWAY_REFUND_ADDRESS,
+    operatorMarginBps: env.OPERATOR_MARGIN_BPS ? Number(env.OPERATOR_MARGIN_BPS) : undefined,
     maxPollTimeMs: env.MAX_POLL_TIME_MS ? Number(env.MAX_POLL_TIME_MS) : undefined,
     pollIntervalBaseMs: env.POLL_INTERVAL_BASE_MS ? Number(env.POLL_INTERVAL_BASE_MS) : undefined,
     pollIntervalMaxMs: env.POLL_INTERVAL_MAX_MS ? Number(env.POLL_INTERVAL_MAX_MS) : undefined,
@@ -161,9 +172,6 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Gateway
 
   const config = GatewayConfigSchema.parse(raw);
 
-  // ── Cross-validate recipient format vs destination chain ──────────
-  validateRecipientFormat(config);
-
   // ── Cross-validate ownership proofs vs publicBaseUrl ──────────────
   validateDiscoveryConfig(config);
 
@@ -192,34 +200,6 @@ function parseAllowedOrigins(raw: string | undefined): string[] | undefined {
 function parseCommaList(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw.split(",").map((s) => s.trim()).filter(Boolean);
-}
-
-/**
- * Warn at startup if the merchant config contains any of the common
- * operator mistakes detected by {@link diagnoseQuoteRequest}:
- *   - whitespace or `#` in any string field (leading-space / inline-comment
- *     bugs in `.env`)
- *   - recipient format that doesn't match the destination chain (EVM, NEAR,
- *     or other non-EVM like Stellar / Solana / Bitcoin)
- *   - unknown chain prefix in `MERCHANT_ASSET_OUT`
- *
- * These are warnings, not errors, because 1CS may support shapes we don't
- * recognize yet. The same diagnoser runs again at runtime (in
- * `requestQuote`'s catch block) and surfaces as `err.context.hints` in
- * server logs, so operators see the same diagnosis whenever it fires.
- */
-function validateRecipientFormat(cfg: GatewayConfig): void {
-  const hints = diagnoseQuoteRequest({
-    originAsset: cfg.originAssetIn,
-    destinationAsset: cfg.merchantAssetOut,
-    recipient: cfg.merchantRecipient,
-    amount: cfg.merchantAmountOut,
-    refundTo: cfg.gatewayRefundAddress,
-  });
-
-  for (const hint of hints) {
-    console.warn(`[x402] ⚠️  Config check: ${hint}`);
-  }
 }
 
 /**

@@ -33,7 +33,6 @@ export {
   TOKEN_NAME,
   TOKEN_VERSION,
   ORIGIN_ASSET_IN,
-  MERCHANT_ASSET_OUT,
 } from "./mock-config.js";
 
 // x402 payloads (with real EIP-712 signatures)
@@ -46,12 +45,20 @@ export {
 // 1CS API responses
 export {
   MOCK_DEPOSIT_ADDRESS,
+  mockSwapInputs,
   mockQuoteResponse,
   mockDepositNotifyResponse,
   mockHappyPathStatusSequence,
   mockFailedStatusSequence,
   mockRefundedStatusSequence,
 } from "./mock-1cs-responses.js";
+
+// Higher-level fixtures (compose the lower-level mocks)
+export {
+  mockSwapState,
+  mockSwapStateInPhase,
+  mockProtectedRoute,
+} from "./mock-fixtures.js";
 
 // Chain reader (verifier dependency)
 export {

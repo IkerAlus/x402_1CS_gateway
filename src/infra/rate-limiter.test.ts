@@ -30,14 +30,28 @@ import {
   mockChainReader,
   signEIP3009Payload,
   buyerWallet,
+  mockSwapInputs,
+  mockProtectedRoute,
 } from "../mocks/index.js";
-import type { SwapState, QuoteResponse } from "../types.js";
+import type { SwapState, QuoteResponse, SwapRequestInput } from "../types.js";
 import type { QuoteFn } from "../payment/quote-engine.js";
 import { MOCK_DEPOSIT_ADDRESS, mockQuoteResponse } from "../mocks/mock-1cs-responses.js";
 import { mockPaymentRequirements } from "../mocks/mock-x402-payloads.js";
 
-function createMockQuoteFn(): QuoteFn {
-  return async () => mockQuoteResponse() as unknown as QuoteResponse;
+function createMockQuoteFn(inputs: SwapRequestInput = mockSwapInputs()): QuoteFn {
+  return async () => mockQuoteResponse(inputs) as unknown as QuoteResponse;
+}
+
+/** Build the buyer's query string for the swap route from a SwapRequestInput. */
+function swapQuery(inputs: SwapRequestInput = mockSwapInputs()): Record<string, string> {
+  const out: Record<string, string> = {
+    destinationChain: inputs.destinationChain,
+    destinationAsset: inputs.destinationAsset,
+    destinationAddress: inputs.destinationAddress,
+    amountIn: inputs.amountIn,
+  };
+  if (inputs.refundAddress) out.refundAddress = inputs.refundAddress;
+  return out;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -388,6 +402,7 @@ describe("Rate limiting middleware integration", () => {
   function createTestApp(overrides: Partial<MiddlewareDeps> = {}) {
     const store = new InMemoryStateStore();
     const cfg = mockFastPollConfig();
+    const route = mockProtectedRoute();
 
     const deps: MiddlewareDeps = {
       cfg,
@@ -397,6 +412,7 @@ describe("Rate limiting middleware integration", () => {
       depositNotifyFn: mockDepositNotifyFn(),
       statusPollFn: mockStatusPollFn(),
       quoteFn: createMockQuoteFn(),
+      route,
       ...overrides,
     };
 
@@ -404,10 +420,10 @@ describe("Rate limiting middleware integration", () => {
     app.use(express.json());
     app.set("trust proxy", true); // So req.ip works in tests
     app.get(
-      "/api/premium",
+      route.path,
       createX402Middleware(deps),
       (_req, res) => {
-        res.json({ content: "premium" });
+        res.json({});
       },
     );
     return { app, store, deps };
@@ -424,16 +440,17 @@ describe("Rate limiting middleware integration", () => {
       );
 
       const { app } = createTestApp({ quoteLimiter });
+      const q = swapQuery();
 
       // First 2 requests should get 402 (normal quote flow)
-      const r1 = await request(app).get("/api/premium");
+      const r1 = await request(app).get("/api/swap").query(q);
       expect(r1.status).toBe(402);
 
-      const r2 = await request(app).get("/api/premium");
+      const r2 = await request(app).get("/api/swap").query(q);
       expect(r2.status).toBe(402);
 
       // Third should be rate-limited
-      const r3 = await request(app).get("/api/premium");
+      const r3 = await request(app).get("/api/swap").query(q);
       expect(r3.status).toBe(429);
       expect(r3.body.error).toBe("RATE_LIMITED");
       expect(r3.headers["retry-after"]).toBeDefined();
@@ -449,7 +466,7 @@ describe("Rate limiting middleware integration", () => {
 
       const { app } = createTestApp({ quoteLimiter });
 
-      const res = await request(app).get("/api/premium");
+      const res = await request(app).get("/api/swap").query(swapQuery());
       expect(res.status).toBe(402);
       expect(res.headers["x-ratelimit-limit"]).toBe("5");
       expect(res.headers["x-ratelimit-remaining"]).toBeDefined();
@@ -465,13 +482,14 @@ describe("Rate limiting middleware integration", () => {
         { now: () => clock },
       );
 
-      const { app, store } = createTestApp({ quoteLimiter });
+      const { app } = createTestApp({ quoteLimiter });
+      const q = swapQuery();
 
       // Use up the quota
-      await request(app).get("/api/premium");
+      await request(app).get("/api/swap").query(q);
 
       // Next bare request should be blocked
-      const blocked = await request(app).get("/api/premium");
+      const blocked = await request(app).get("/api/swap").query(q);
       expect(blocked.status).toBe(429);
 
       // But a request with PAYMENT-SIGNATURE should bypass the rate limiter
@@ -480,7 +498,8 @@ describe("Rate limiting middleware integration", () => {
       const encoded = Buffer.from(JSON.stringify(payload)).toString("base64");
 
       const paymentRes = await request(app)
-        .get("/api/premium")
+        .get("/api/swap")
+        .query(q)
         .set("PAYMENT-SIGNATURE", encoded);
 
       // Should NOT be 429 — could be 402 (state not found) or another error
@@ -501,28 +520,19 @@ describe("Rate limiting middleware integration", () => {
       const { app, store } = createTestApp({ settlementLimiter });
 
       // Create a QUOTED state so the payment gets to the settlement step
-      const state: SwapState = {
-        depositAddress: MOCK_DEPOSIT_ADDRESS,
-        quoteResponse: mockQuoteResponse(),
-        paymentRequirements: mockPaymentRequirements(),
-        phase: "QUOTED",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-      await store.create(MOCK_DEPOSIT_ADDRESS, state);
+      const { mockSwapState } = await import("../mocks/index.js");
+      await store.create(MOCK_DEPOSIT_ADDRESS, mockSwapState());
 
       // Sign a valid payload
       const { payload } = await signEIP3009Payload(buyerWallet);
       const encoded = Buffer.from(JSON.stringify(payload)).toString("base64");
 
       const res = await request(app)
-        .get("/api/premium")
+        .get("/api/swap")
+        .query(swapQuery())
         .set("PAYMENT-SIGNATURE", encoded);
 
-      // The request should be rejected with 503 since there's no settlement capacity,
-      // OR it could fail earlier at verification. Let's check it's not a 200 at least,
-      // and if the verifier passes, it should be a 503.
-      // Since the mock chain reader allows verification, we should get 503.
+      // The request should be rejected with 503 since there's no settlement capacity.
       expect(res.status).toBe(503);
       expect(res.body.error).toBe("SETTLEMENT_CAPACITY_EXCEEDED");
 
@@ -534,22 +544,16 @@ describe("Rate limiting middleware integration", () => {
       const { app, store } = createTestApp({ settlementLimiter });
 
       // Create a QUOTED state
-      const state: SwapState = {
-        depositAddress: MOCK_DEPOSIT_ADDRESS,
-        quoteResponse: mockQuoteResponse(),
-        paymentRequirements: mockPaymentRequirements(),
-        phase: "QUOTED",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-      await store.create(MOCK_DEPOSIT_ADDRESS, state);
+      const { mockSwapState } = await import("../mocks/index.js");
+      await store.create(MOCK_DEPOSIT_ADDRESS, mockSwapState());
 
       const { payload } = await signEIP3009Payload(buyerWallet);
       const encoded = Buffer.from(JSON.stringify(payload)).toString("base64");
 
       // This should succeed and release the slot
       const res = await request(app)
-        .get("/api/premium")
+        .get("/api/swap")
+        .query(swapQuery())
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(res.status).toBe(200);

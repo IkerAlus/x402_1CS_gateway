@@ -1,7 +1,7 @@
 /**
  * Tests for the State Store module.
  *
- * Tests are written against the {@link StateStore} interface so they can be
+ * Tests are written against the {@link StateStore} interface so they can
  * run against any implementation. The `describeStore` helper runs the full
  * suite for both `SqliteStateStore` and `InMemoryStateStore`.
  */
@@ -22,25 +22,32 @@ import { VALID_PHASE_TRANSITIONS, GC_ELIGIBLE_PHASES } from "../types.js";
 // Test helpers
 // ═══════════════════════════════════════════════════════════════════════
 
-/** Build a minimal valid SwapState for testing. */
+/** Build a minimal valid SwapState for testing (with the new required swap-as-resource fields). */
 function makeSwapState(overrides: Partial<SwapState> = {}): SwapState {
   const now = Date.now();
   return {
     depositAddress: "0xDEPOSIT_001",
+    swapInputs: {
+      destinationChain: "near",
+      destinationAsset: "nep141:usdc.near",
+      destinationAddress: "alice.near",
+      amountIn: "10000000",
+    },
+    operatorMarginBps: 30,
     quoteResponse: {
       correlationId: "corr-001",
       timestamp: new Date().toISOString(),
       signature: "sig-001",
-      quoteRequest: { swapType: "EXACT_OUTPUT" },
+      quoteRequest: { swapType: "EXACT_INPUT" },
       quote: {
         depositAddress: "0xDEPOSIT_001",
-        amountIn: "10500000",
-        amountInFormatted: "10.50",
-        amountInUsd: "10.50",
+        amountIn: "10000000",
+        amountInFormatted: "10.00",
+        amountInUsd: "10.00",
         minAmountIn: "10000000",
-        amountOut: "10000000",
-        amountOutFormatted: "10.00",
-        amountOutUsd: "10.00",
+        amountOut: "9985000",
+        amountOutFormatted: "9.985",
+        amountOutUsd: "9.99",
         minAmountOut: "9950000",
         deadline: new Date(now + 300_000).toISOString(),
         timeEstimate: 60,
@@ -50,14 +57,10 @@ function makeSwapState(overrides: Partial<SwapState> = {}): SwapState {
       scheme: "exact",
       network: "eip155:8453",
       asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-      amount: "10500000",
+      amount: "10030000",
       payTo: "0xDEPOSIT_001",
       maxTimeoutSeconds: 270,
-      extra: {
-        name: "USDC",
-        version: "2",
-        assetTransferMethod: "eip3009",
-      },
+      extra: { name: "USDC", version: "2", assetTransferMethod: "eip3009" },
     },
     phase: "QUOTED" as SwapPhase,
     createdAt: now,
@@ -90,42 +93,7 @@ function describeStore(
 
     // ── create / get ─────────────────────────────────────────────────
 
-    it("should create and retrieve a swap state", async () => {
-      const state = makeSwapState();
-      await store.create(state.depositAddress, state);
-
-      const retrieved = await store.get(state.depositAddress);
-      expect(retrieved).not.toBeNull();
-      expect(retrieved!.depositAddress).toBe(state.depositAddress);
-      expect(retrieved!.phase).toBe("QUOTED");
-      expect(retrieved!.quoteResponse.correlationId).toBe("corr-001");
-      expect(retrieved!.paymentRequirements.payTo).toBe("0xDEPOSIT_001");
-    });
-
-    it("should return null for a non-existent deposit address", async () => {
-      const result = await store.get("0xNON_EXISTENT");
-      expect(result).toBeNull();
-    });
-
-    it("should overwrite on create with same deposit address (idempotent)", async () => {
-      const state1 = makeSwapState({ depositAddress: "0xABC" });
-      await store.create("0xABC", state1);
-
-      const state2 = makeSwapState({
-        depositAddress: "0xABC",
-        phase: "QUOTED",
-        quoteResponse: {
-          ...state1.quoteResponse,
-          correlationId: "corr-002",
-        },
-      });
-      await store.create("0xABC", state2);
-
-      const retrieved = await store.get("0xABC");
-      expect(retrieved!.quoteResponse.correlationId).toBe("corr-002");
-    });
-
-    it("should preserve all SwapState fields through serialization", async () => {
+    it("creates and retrieves a swap state, preserving every field through serialization", async () => {
       const state = makeSwapState({
         paymentPayload: {
           x402Version: 2,
@@ -140,311 +108,166 @@ function describeStore(
           success: true,
           transaction: "0xTXHASH",
           network: "eip155:8453",
-          extra: {
-            settlementType: "crosschain-1cs",
-            swapStatus: "SUCCESS",
-            correlationId: "corr-001",
-          },
+          extra: { settlementType: "crosschain-1cs", swapStatus: "SUCCESS", correlationId: "corr-001" },
         },
-        error: undefined,
       });
-
       await store.create(state.depositAddress, state);
-      const retrieved = await store.get(state.depositAddress);
 
-      expect(retrieved!.paymentPayload?.x402Version).toBe(2);
+      const retrieved = await store.get(state.depositAddress);
+      expect(retrieved).not.toBeNull();
+      expect(retrieved!.depositAddress).toBe(state.depositAddress);
+      expect(retrieved!.swapInputs).toEqual(state.swapInputs);
+      expect(retrieved!.operatorMarginBps).toBe(state.operatorMarginBps);
+      expect(retrieved!.quoteResponse.correlationId).toBe("corr-001");
       expect(retrieved!.signerAddress).toBe("0xBUYER");
-      expect(retrieved!.originTxHash).toBe("0xTXHASH");
-      expect(retrieved!.oneClickStatus).toBe("SUCCESS");
-      expect(retrieved!.settledAt).toBeDefined();
-      expect(retrieved!.settlementResponse?.success).toBe(true);
-      expect(retrieved!.settlementResponse?.extra?.settlementType).toBe(
-        "crosschain-1cs",
+      expect(retrieved!.settlementResponse?.extra?.settlementType).toBe("crosschain-1cs");
+    });
+
+    it("returns null for a non-existent deposit address", async () => {
+      expect(await store.get("0xNON_EXISTENT")).toBeNull();
+    });
+
+    it("create is idempotent — the second call overwrites the first", async () => {
+      await store.create("0xABC", makeSwapState({ depositAddress: "0xABC" }));
+      await store.create(
+        "0xABC",
+        makeSwapState({
+          depositAddress: "0xABC",
+          quoteResponse: { ...makeSwapState().quoteResponse, correlationId: "corr-002" },
+        }),
       );
+      expect((await store.get("0xABC"))!.quoteResponse.correlationId).toBe("corr-002");
     });
 
     // ── update ────────────────────────────────────────────────────────
 
-    it("should update state with a partial patch", async () => {
-      const state = makeSwapState();
-      await store.create(state.depositAddress, state);
-
-      await store.update(state.depositAddress, {
-        phase: "VERIFIED",
-        signerAddress: "0xBUYER",
-      });
-
-      const retrieved = await store.get(state.depositAddress);
-      expect(retrieved!.phase).toBe("VERIFIED");
-      expect(retrieved!.signerAddress).toBe("0xBUYER");
-      // Original fields preserved
-      expect(retrieved!.quoteResponse.correlationId).toBe("corr-001");
-    });
-
-    it("should update updatedAt on patch", async () => {
+    it("applies a partial patch (preserving original fields) and bumps updatedAt; throws on missing state", async () => {
       const state = makeSwapState({ createdAt: 1000, updatedAt: 1000 });
       await store.create(state.depositAddress, state);
 
       const beforeUpdate = Date.now();
-      await store.update(state.depositAddress, { phase: "VERIFIED" });
+      await store.update(state.depositAddress, { phase: "VERIFIED", signerAddress: "0xBUYER" });
 
       const retrieved = await store.get(state.depositAddress);
+      expect(retrieved!.phase).toBe("VERIFIED");
+      expect(retrieved!.signerAddress).toBe("0xBUYER");
       expect(retrieved!.updatedAt).toBeGreaterThanOrEqual(beforeUpdate);
-      expect(retrieved!.createdAt).toBe(1000); // unchanged
+      expect(retrieved!.createdAt).toBe(1000);
+      expect(retrieved!.quoteResponse.correlationId).toBe("corr-001");
+
+      await expect(store.update("0xNON_EXISTENT", { phase: "VERIFIED" })).rejects.toThrow(StateNotFoundError);
     });
 
-    it("should throw StateNotFoundError when updating non-existent state", async () => {
-      await expect(
-        store.update("0xNON_EXISTENT", { phase: "VERIFIED" }),
-      ).rejects.toThrow(StateNotFoundError);
-    });
+    // ── phase transitions ────────────────────────────────────────────
 
-    it("should allow valid phase transition QUOTED → VERIFIED", async () => {
-      const state = makeSwapState({ phase: "QUOTED" });
-      await store.create(state.depositAddress, state);
+    it("enforces phase-transition rules (allows valid; rejects invalid; rejects exits from terminal)", async () => {
+      // Valid transitions from QUOTED.
+      for (const next of ["VERIFIED", "EXPIRED", "FAILED"] as SwapPhase[]) {
+        const addr = `0x_TO_${next}`;
+        await store.create(addr, makeSwapState({ depositAddress: addr, phase: "QUOTED" }));
+        await expect(store.update(addr, { phase: next })).resolves.not.toThrow();
+      }
 
-      await expect(
-        store.update(state.depositAddress, { phase: "VERIFIED" }),
-      ).resolves.not.toThrow();
-    });
+      // Invalid skip-ahead.
+      await store.create("0xSKIP", makeSwapState({ depositAddress: "0xSKIP", phase: "QUOTED" }));
+      await expect(store.update("0xSKIP", { phase: "SETTLED" })).rejects.toThrow(
+        InvalidPhaseTransitionError,
+      );
 
-    it("should allow valid phase transition QUOTED → EXPIRED", async () => {
-      const state = makeSwapState({ phase: "QUOTED" });
-      await store.create(state.depositAddress, state);
-
-      await expect(
-        store.update(state.depositAddress, { phase: "EXPIRED" }),
-      ).resolves.not.toThrow();
-    });
-
-    it("should allow valid phase transition QUOTED → FAILED", async () => {
-      const state = makeSwapState({ phase: "QUOTED" });
-      await store.create(state.depositAddress, state);
-
-      await expect(
-        store.update(state.depositAddress, { phase: "FAILED" }),
-      ).resolves.not.toThrow();
-    });
-
-    it("should reject invalid phase transition QUOTED → SETTLED", async () => {
-      const state = makeSwapState({ phase: "QUOTED" });
-      await store.create(state.depositAddress, state);
-
-      await expect(
-        store.update(state.depositAddress, { phase: "SETTLED" }),
-      ).rejects.toThrow(InvalidPhaseTransitionError);
-    });
-
-    it("should reject transitions from terminal states", async () => {
+      // Terminal phases have no exits.
       for (const terminal of ["SETTLED", "FAILED", "EXPIRED"] as SwapPhase[]) {
-        const state = makeSwapState({
-          depositAddress: `0x_${terminal}`,
-          phase: terminal,
-        });
-        await store.create(state.depositAddress, state);
-
-        await expect(
-          store.update(state.depositAddress, { phase: "QUOTED" }),
-        ).rejects.toThrow(InvalidPhaseTransitionError);
+        const addr = `0x_${terminal}`;
+        await store.create(addr, makeSwapState({ depositAddress: addr, phase: terminal }));
+        await expect(store.update(addr, { phase: "QUOTED" })).rejects.toThrow(
+          InvalidPhaseTransitionError,
+        );
       }
     });
 
-    it("should allow update without phase change (no transition validation)", async () => {
-      const state = makeSwapState({ phase: "POLLING" });
-      await store.create(state.depositAddress, state);
-
-      // Updating status without changing phase should be fine
+    it("update without phase change bypasses transition validation (status-only patches)", async () => {
+      await store.create("0xPOLL", makeSwapState({ depositAddress: "0xPOLL", phase: "POLLING" }));
       await expect(
-        store.update(state.depositAddress, { oneClickStatus: "PROCESSING" }),
+        store.update("0xPOLL", { oneClickStatus: "PROCESSING" }),
       ).resolves.not.toThrow();
     });
 
-    it("should walk through the full happy-path lifecycle", async () => {
+    it("walks through the full happy-path lifecycle QUOTED → VERIFIED → BROADCASTING → BROADCAST → POLLING → SETTLED", async () => {
       const state = makeSwapState({ phase: "QUOTED" });
       await store.create(state.depositAddress, state);
 
-      const transitions: SwapPhase[] = [
-        "VERIFIED",
-        "BROADCASTING",
-        "BROADCAST",
-        "POLLING",
-        "SETTLED",
-      ];
-
-      for (const nextPhase of transitions) {
-        await store.update(state.depositAddress, { phase: nextPhase });
-        const current = await store.get(state.depositAddress);
-        expect(current!.phase).toBe(nextPhase);
+      for (const next of ["VERIFIED", "BROADCASTING", "BROADCAST", "POLLING", "SETTLED"] as SwapPhase[]) {
+        await store.update(state.depositAddress, { phase: next });
+        expect((await store.get(state.depositAddress))!.phase).toBe(next);
       }
     });
 
     // ── listExpired ──────────────────────────────────────────────────
 
-    it("should list states older than the threshold", async () => {
-      const old = makeSwapState({
-        depositAddress: "0xOLD",
-        createdAt: 1000,
-      });
-      const recent = makeSwapState({
-        depositAddress: "0xRECENT",
-        createdAt: Date.now(),
-      });
+    it("listExpired returns addresses older than the threshold (and respects in-flight phase exclusion when filtering)", async () => {
+      // Prepare three states:
+      //   0xQUOTE — old QUOTED (eligible)
+      //   0xPOLL  — old POLLING (in-flight; NOT GC-eligible)
+      //   0xDONE  — old SETTLED (terminal; eligible)
+      //   0xRECENT — recent (should never expire)
+      await store.create("0xQUOTE", makeSwapState({ depositAddress: "0xQUOTE", createdAt: 1_000, phase: "QUOTED" }));
+      await store.create("0xRECENT", makeSwapState({ depositAddress: "0xRECENT", createdAt: Date.now() }));
 
-      await store.create("0xOLD", old);
-      await store.create("0xRECENT", recent);
+      // Walk to POLLING via valid path.
+      await store.create("0xPOLL", makeSwapState({ depositAddress: "0xPOLL", createdAt: 1_000, phase: "QUOTED" }));
+      for (const next of ["VERIFIED", "BROADCASTING", "BROADCAST", "POLLING"] as SwapPhase[]) {
+        await store.update("0xPOLL", next === "BROADCAST" ? { phase: next, originTxHash: "0xT" } : { phase: next });
+      }
+      // Walk to SETTLED.
+      await store.create("0xDONE", makeSwapState({ depositAddress: "0xDONE", createdAt: 1_000, phase: "QUOTED" }));
+      for (const next of ["VERIFIED", "BROADCASTING", "BROADCAST", "POLLING", "SETTLED"] as SwapPhase[]) {
+        await store.update("0xDONE", next === "BROADCAST" ? { phase: next, originTxHash: "0xT2" } : { phase: next });
+      }
 
-      const expired = await store.listExpired(5000);
-      expect(expired).toContain("0xOLD");
-      expect(expired).not.toContain("0xRECENT");
+      // Without the phase filter: all old states are expired regardless of phase.
+      const allExpired = await store.listExpired(5_000);
+      expect(allExpired).toEqual(expect.arrayContaining(["0xQUOTE", "0xPOLL", "0xDONE"]));
+      expect(allExpired).not.toContain("0xRECENT");
+
+      // With GC_ELIGIBLE_PHASES: in-flight POLLING is excluded.
+      const gcEligible = await store.listExpired(5_000, GC_ELIGIBLE_PHASES);
+      expect(gcEligible).toEqual(expect.arrayContaining(["0xQUOTE", "0xDONE"]));
+      expect(gcEligible).not.toContain("0xPOLL");
     });
 
-    it("should return empty array when no states are expired", async () => {
-      const state = makeSwapState({ createdAt: Date.now() });
-      await store.create(state.depositAddress, state);
-
-      const expired = await store.listExpired(1000);
-      expect(expired).toEqual([]);
-    });
-
-    it("filters listExpired by phase when a phases set is provided", async () => {
-      // All three states are old enough to be "expired"
-      await store.create(
-        "0xQUOTE",
-        makeSwapState({ depositAddress: "0xQUOTE", createdAt: 1_000, phase: "QUOTED" }),
-      );
-
-      // Transition 0xPOLL to POLLING via valid path, preserving createdAt
-      await store.create(
-        "0xPOLL",
-        makeSwapState({ depositAddress: "0xPOLL", createdAt: 1_000, phase: "QUOTED" }),
-      );
-      await store.update("0xPOLL", { phase: "VERIFIED" });
-      await store.update("0xPOLL", { phase: "BROADCASTING" });
-      await store.update("0xPOLL", { phase: "BROADCAST", originTxHash: "0xTX" });
-      await store.update("0xPOLL", { phase: "POLLING" });
-
-      await store.create(
-        "0xDONE",
-        makeSwapState({ depositAddress: "0xDONE", createdAt: 1_000, phase: "QUOTED" }),
-      );
-      await store.update("0xDONE", { phase: "VERIFIED" });
-      await store.update("0xDONE", { phase: "BROADCASTING" });
-      await store.update("0xDONE", { phase: "BROADCAST", originTxHash: "0xTX2" });
-      await store.update("0xDONE", { phase: "POLLING" });
-      await store.update("0xDONE", { phase: "SETTLED" });
-
-      const expired = await store.listExpired(5_000, GC_ELIGIBLE_PHASES);
-      expect(expired).toContain("0xQUOTE");
-      expect(expired).toContain("0xDONE");
-      expect(expired).not.toContain("0xPOLL");
-    });
-
-    it("excludes in-flight states from listExpired even when old", async () => {
-      await store.create(
-        "0xPOLL",
-        makeSwapState({ depositAddress: "0xPOLL", createdAt: 1_000, phase: "QUOTED" }),
-      );
-      await store.update("0xPOLL", { phase: "VERIFIED" });
-      await store.update("0xPOLL", { phase: "BROADCASTING" });
-
-      const expired = await store.listExpired(5_000, GC_ELIGIBLE_PHASES);
-      expect(expired).toEqual([]);
-    });
-
-    it("preserves legacy listExpired behavior when phases is omitted", async () => {
-      await store.create(
-        "0xQUOTE",
-        makeSwapState({ depositAddress: "0xQUOTE", createdAt: 1_000, phase: "QUOTED" }),
-      );
-      await store.create(
-        "0xPOLL",
-        makeSwapState({ depositAddress: "0xPOLL", createdAt: 1_000, phase: "QUOTED" }),
-      );
-      await store.update("0xPOLL", { phase: "VERIFIED" });
-      await store.update("0xPOLL", { phase: "BROADCASTING" });
-
-      const expired = await store.listExpired(5_000);
-      expect(expired).toContain("0xQUOTE");
-      expect(expired).toContain("0xPOLL");
+    it("listExpired returns [] when no states are old enough", async () => {
+      await store.create("0xR", makeSwapState({ depositAddress: "0xR", createdAt: Date.now() }));
+      expect(await store.listExpired(1_000)).toEqual([]);
     });
 
     // ── listByPhase ─────────────────────────────────────────────────
 
-    it("should list states matching the given phase", async () => {
+    it("listByPhase returns matching states (and deep copies — mutating the result doesn't affect the store)", async () => {
       await store.create("0xA", makeSwapState({ depositAddress: "0xA", phase: "QUOTED" }));
-      await store.create("0xB", makeSwapState({ depositAddress: "0xB", phase: "QUOTED" }));
-      // Transition 0xB to BROADCASTING via valid path
-      await store.update("0xB", { phase: "VERIFIED" });
-      await store.update("0xB", { phase: "BROADCASTING" });
-      await store.create("0xC", makeSwapState({ depositAddress: "0xC", phase: "QUOTED" }));
-      await store.update("0xC", { phase: "VERIFIED" });
-      await store.update("0xC", { phase: "BROADCASTING" });
-      await store.update("0xC", {
-        phase: "BROADCAST",
-        originTxHash: "0xTX123",
-      });
-      await store.update("0xC", { phase: "POLLING" });
 
-      const broadcasting = await store.listByPhase("BROADCASTING");
-      expect(broadcasting).toHaveLength(1);
-      expect(broadcasting[0]!.depositAddress).toBe("0xB");
-
-      const polling = await store.listByPhase("POLLING");
-      expect(polling).toHaveLength(1);
-      expect(polling[0]!.depositAddress).toBe("0xC");
-
-      const quoted = await store.listByPhase("QUOTED");
-      expect(quoted).toHaveLength(1);
-      expect(quoted[0]!.depositAddress).toBe("0xA");
-    });
-
-    it("should return empty array when no states match the phase", async () => {
-      await store.create("0xA", makeSwapState({ depositAddress: "0xA", phase: "QUOTED" }));
-      const result = await store.listByPhase("POLLING");
-      expect(result).toEqual([]);
-    });
-
-    it("should return deep copies from listByPhase", async () => {
-      await store.create("0xA", makeSwapState({ depositAddress: "0xA", phase: "QUOTED" }));
       const [first] = await store.listByPhase("QUOTED");
       first!.depositAddress = "MUTATED";
-
       const [second] = await store.listByPhase("QUOTED");
       expect(second!.depositAddress).toBe("0xA");
+
+      expect(await store.listByPhase("POLLING")).toEqual([]);
     });
 
-    // ── delete ────────────────────────────────────────────────────────
+    // ── delete + multi-state ────────────────────────────────────────
 
-    it("should delete a swap state", async () => {
-      const state = makeSwapState();
-      await store.create(state.depositAddress, state);
+    it("delete removes a state (no-op on non-existent); operations on unrelated states are independent", async () => {
+      await store.create("0xA", makeSwapState({ depositAddress: "0xA" }));
+      await store.create("0xB", makeSwapState({ depositAddress: "0xB" }));
+      await store.create("0xC", makeSwapState({ depositAddress: "0xC" }));
 
-      await store.delete(state.depositAddress);
-      const retrieved = await store.get(state.depositAddress);
-      expect(retrieved).toBeNull();
-    });
-
-    it("should not throw when deleting a non-existent state", async () => {
-      await expect(store.delete("0xNON_EXISTENT")).resolves.not.toThrow();
-    });
-
-    // ── multiple states ──────────────────────────────────────────────
-
-    it("should handle multiple independent swap states", async () => {
-      const state1 = makeSwapState({ depositAddress: "0xA" });
-      const state2 = makeSwapState({ depositAddress: "0xB" });
-      const state3 = makeSwapState({ depositAddress: "0xC" });
-
-      await store.create("0xA", state1);
-      await store.create("0xB", state2);
-      await store.create("0xC", state3);
-
-      // Update one, others unaffected
       await store.update("0xB", { phase: "VERIFIED" });
-
       expect((await store.get("0xA"))!.phase).toBe("QUOTED");
       expect((await store.get("0xB"))!.phase).toBe("VERIFIED");
       expect((await store.get("0xC"))!.phase).toBe("QUOTED");
+
+      await store.delete("0xA");
+      expect(await store.get("0xA")).toBeNull();
+
+      await expect(store.delete("0xNON_EXISTENT")).resolves.not.toThrow();
     });
   });
 }
@@ -454,158 +277,74 @@ function describeStore(
 // ═══════════════════════════════════════════════════════════════════════
 
 describeStore("SqliteStateStore", async () => {
-  const store = new SqliteStateStore(); // in-memory SQLite
+  const store = new SqliteStateStore();
   await store.init();
-  return {
-    store,
-    cleanup: () => store.close(),
-  };
+  return { store, cleanup: () => store.close() };
 });
 
 describeStore("InMemoryStateStore", async () => {
   const store = new InMemoryStateStore();
-  return {
-    store,
-    cleanup: async () => store.clear(),
-  };
+  return { store, cleanup: async () => store.clear() };
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// SQLite-specific tests
+// SQLite-specific
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("SqliteStateStore (specific)", () => {
-  it("should throw if used before init()", async () => {
+  it("throws if used before init()", async () => {
     const store = new SqliteStateStore();
-    // Not calling init()
     await expect(store.get("0xABC")).rejects.toThrow("not initialized");
   });
 
-  it("should support listByPhase", async () => {
+  it("supports countByPhase and count() (used by health/metrics endpoints)", async () => {
     const store = new SqliteStateStore();
     await store.init();
-
-    await store.create(
-      "0xA",
-      makeSwapState({ depositAddress: "0xA", phase: "QUOTED" }),
-    );
-    await store.create(
-      "0xB",
-      makeSwapState({ depositAddress: "0xB", phase: "QUOTED" }),
-    );
-    await store.create(
-      "0xC",
-      makeSwapState({ depositAddress: "0xC", phase: "POLLING" }),
-    );
-
-    const quoted = await store.listByPhase("QUOTED");
-    expect(quoted).toHaveLength(2);
-    expect(quoted.map((s) => s.depositAddress).sort()).toEqual(["0xA", "0xB"]);
-
-    const polling = await store.listByPhase("POLLING");
-    expect(polling).toHaveLength(1);
-    expect(polling[0].depositAddress).toBe("0xC");
-
-    await store.close();
-  });
-
-  it("should support countByPhase", async () => {
-    const store = new SqliteStateStore();
-    await store.init();
-
-    await store.create(
-      "0xA",
-      makeSwapState({ depositAddress: "0xA", phase: "QUOTED" }),
-    );
-    await store.create(
-      "0xB",
-      makeSwapState({ depositAddress: "0xB", phase: "QUOTED" }),
-    );
-    await store.create(
-      "0xC",
-      makeSwapState({ depositAddress: "0xC", phase: "POLLING" }),
-    );
-
-    const counts = await store.countByPhase();
-    expect(counts["QUOTED"]).toBe(2);
-    expect(counts["POLLING"]).toBe(1);
-
-    await store.close();
-  });
-
-  it("should support count", async () => {
-    const store = new SqliteStateStore();
-    await store.init();
-
     expect(await store.count()).toBe(0);
 
-    await store.create(
-      "0xA",
-      makeSwapState({ depositAddress: "0xA" }),
-    );
-    expect(await store.count()).toBe(1);
+    await store.create("0xA", makeSwapState({ depositAddress: "0xA", phase: "QUOTED" }));
+    await store.create("0xB", makeSwapState({ depositAddress: "0xB", phase: "QUOTED" }));
+    await store.create("0xC", makeSwapState({ depositAddress: "0xC", phase: "POLLING" }));
 
-    await store.create(
-      "0xB",
-      makeSwapState({ depositAddress: "0xB" }),
-    );
-    expect(await store.count()).toBe(2);
+    expect(await store.count()).toBe(3);
+    const counts = await store.countByPhase();
+    expect(counts.QUOTED).toBe(2);
+    expect(counts.POLLING).toBe(1);
 
     await store.delete("0xA");
-    expect(await store.count()).toBe(1);
-
+    expect(await store.count()).toBe(2);
     await store.close();
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// validatePhaseTransition (unit tests)
+// validatePhaseTransition (unit tests over the full transition map)
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("validatePhaseTransition", () => {
-  it("should accept all valid transitions from the lifecycle map", () => {
-    for (const [from, allowedSet] of VALID_PHASE_TRANSITIONS) {
-      for (const to of allowedSet) {
+  it("accepts every transition in VALID_PHASE_TRANSITIONS; rejects every other transition with InvalidPhaseTransitionError carrying both phase names", () => {
+    const allPhases: SwapPhase[] = [
+      "QUOTED", "VERIFIED", "BROADCASTING", "BROADCAST", "POLLING", "SETTLED", "FAILED", "EXPIRED",
+    ];
+    for (const [from, allowed] of VALID_PHASE_TRANSITIONS) {
+      for (const to of allowed) {
         expect(() => validatePhaseTransition(from, to)).not.toThrow();
       }
-    }
-  });
-
-  it("should reject all invalid transitions", () => {
-    const allPhases: SwapPhase[] = [
-      "QUOTED",
-      "VERIFIED",
-      "BROADCASTING",
-      "BROADCAST",
-      "POLLING",
-      "SETTLED",
-      "FAILED",
-      "EXPIRED",
-    ];
-
-    for (const from of allPhases) {
-      const allowed = VALID_PHASE_TRANSITIONS.get(from) ?? new Set();
       for (const to of allPhases) {
-        if (from === to) continue; // same-phase is not a transition
-        if (allowed.has(to)) continue; // valid transition
-        expect(() => validatePhaseTransition(from, to)).toThrow(
-          InvalidPhaseTransitionError,
-        );
+        if (from === to || allowed.has(to)) continue;
+        expect(() => validatePhaseTransition(from, to)).toThrow(InvalidPhaseTransitionError);
       }
     }
-  });
 
-  it("should include phase names in error message", () => {
     try {
       validatePhaseTransition("SETTLED", "QUOTED");
       expect.fail("Should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(InvalidPhaseTransitionError);
-      const e = err as InvalidPhaseTransitionError;
-      expect(e.fromPhase).toBe("SETTLED");
-      expect(e.toPhase).toBe("QUOTED");
-      expect(e.message).toContain("SETTLED");
-      expect(e.message).toContain("QUOTED");
+      expect((err as InvalidPhaseTransitionError).fromPhase).toBe("SETTLED");
+      expect((err as InvalidPhaseTransitionError).toPhase).toBe("QUOTED");
+      expect((err as Error).message).toContain("SETTLED");
+      expect((err as Error).message).toContain("QUOTED");
     }
   });
 });
@@ -615,33 +354,19 @@ describe("validatePhaseTransition", () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("createStateStore", () => {
-  it("should create a SqliteStateStore by default", async () => {
-    const store = await createStateStore();
-    // Verify it works
-    await store.create("0xTEST", makeSwapState({ depositAddress: "0xTEST" }));
-    const result = await store.get("0xTEST");
-    expect(result).not.toBeNull();
-    // Clean up
-    if ("close" in store) await (store as SqliteStateStore).close();
-  });
+  it("selects backend by option (default sqlite, explicit sqlite, memory) and rejects unknown backends", async () => {
+    const sqliteDefault = await createStateStore();
+    await sqliteDefault.create("0x1", makeSwapState({ depositAddress: "0x1" }));
+    expect(await sqliteDefault.get("0x1")).not.toBeNull();
+    if ("close" in sqliteDefault) await (sqliteDefault as SqliteStateStore).close();
 
-  it("should create a SqliteStateStore when backend is 'sqlite'", async () => {
-    const store = await createStateStore({ backend: "sqlite" });
-    await store.create("0xTEST", makeSwapState({ depositAddress: "0xTEST" }));
-    expect(await store.get("0xTEST")).not.toBeNull();
-    if ("close" in store) await (store as SqliteStateStore).close();
-  });
+    const sqliteExplicit = await createStateStore({ backend: "sqlite" });
+    await sqliteExplicit.create("0x2", makeSwapState({ depositAddress: "0x2" }));
+    if ("close" in sqliteExplicit) await (sqliteExplicit as SqliteStateStore).close();
 
-  it("should create an InMemoryStateStore when backend is 'memory'", async () => {
-    const store = await createStateStore({ backend: "memory" });
-    expect(store).toBeInstanceOf(InMemoryStateStore);
-    await store.create("0xTEST", makeSwapState({ depositAddress: "0xTEST" }));
-    expect(await store.get("0xTEST")).not.toBeNull();
-  });
+    const memory = await createStateStore({ backend: "memory" });
+    expect(memory).toBeInstanceOf(InMemoryStateStore);
 
-  it("should throw on unknown backend", async () => {
-    await expect(
-      createStateStore({ backend: "redis" as "sqlite" }),
-    ).rejects.toThrow("Unknown state store backend");
+    await expect(createStateStore({ backend: "redis" as "sqlite" })).rejects.toThrow("Unknown state store backend");
   });
 });

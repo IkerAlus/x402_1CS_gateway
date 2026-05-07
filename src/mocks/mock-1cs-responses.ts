@@ -3,10 +3,16 @@
  *
  * These match the shapes returned by the @defuse-protocol/one-click-sdk-typescript
  * SDK methods: getQuote(), submitDepositTx(), getExecutionStatus().
+ *
+ * The swap-as-resource service uses `swapType: EXACT_INPUT` — the buyer
+ * signs for an exact `amountIn`, the destination amount becomes the
+ * variable. Slippage upside lands on the buyer.
  */
 
-import type { QuoteResponseRecord } from "../types.js";
+import type { QuoteResponseRecord, SwapRequestInput } from "../types.js";
 import type { StatusPollResult, DepositNotifyResult } from "../payment/settler.js";
+import { ORIGIN_ASSET_IN, DESTINATION_PRESETS } from "./mock-config.js";
+import { FACILITATOR_ADDRESS } from "./mock-wallets.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Deposit address (the key binding between x402 payTo and 1CS)
@@ -19,27 +25,40 @@ import type { StatusPollResult, DepositNotifyResult } from "../payment/settler.j
 export const MOCK_DEPOSIT_ADDRESS = "0x7a16fF8270133F063aAb6C9977183D9e72835428";
 
 // ═══════════════════════════════════════════════════════════════════════
+// Buyer swap inputs
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Build a realistic {@link SwapRequestInput} the buyer would supply via
+ * query string. Defaults to the NEAR preset; pass overrides (often from
+ * {@link DESTINATION_PRESETS}) to test other destination chains.
+ */
+export function mockSwapInputs(
+  overrides: Partial<SwapRequestInput> = {},
+): SwapRequestInput {
+  return {
+    ...DESTINATION_PRESETS.near,
+    amountIn: "10000000", // 10 USDC (6 decimals)
+    ...overrides,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Quote response
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
  * Build a realistic 1CS QuoteResponse (as stored in SwapState.quoteResponse).
  *
- * Represents an EXACT_OUTPUT quote: merchant wants 10 USDC on the configured
- * destination chain, buyer pays ~10.50 USDC on Base (includes fee + slippage).
+ * Represents an EXACT_INPUT quote: buyer signs for an exact 10 USDC on
+ * Base, destination amount lands at ~9.985 USDC on the chosen chain
+ * (after 1CS fee + slippage). This matches the swap-as-resource semantics.
  *
- * To test a different destination chain, override `quoteRequest`:
- * ```typescript
- * mockQuoteResponse({
- *   quoteRequest: {
- *     ...mockQuoteResponse().quoteRequest,
- *     destinationAsset: DESTINATION_PRESETS.arbitrum.merchantAssetOut,
- *     recipient: DESTINATION_PRESETS.arbitrum.merchantRecipient,
- *   },
- * });
- * ```
+ * @param inputs   Buyer's swap parameters. Defaults to {@link mockSwapInputs}.
+ * @param overrides Top-level QuoteResponseRecord overrides.
  */
 export function mockQuoteResponse(
+  inputs: SwapRequestInput = mockSwapInputs(),
   overrides: Partial<QuoteResponseRecord> = {},
 ): QuoteResponseRecord {
   const deadline = new Date(Date.now() + 10 * 60 * 1000); // 10 min from now
@@ -50,31 +69,33 @@ export function mockQuoteResponse(
     signature: "mock-1cs-quote-signature-base64",
     quoteRequest: {
       dry: false,
-      swapType: "EXACT_OUTPUT",
+      swapType: "EXACT_INPUT",
       slippageTolerance: 50,
-      originAsset: "nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near",
+      originAsset: ORIGIN_ASSET_IN,
       depositType: "ORIGIN_CHAIN",
-      destinationAsset: "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
-      amount: "10000000",
-      refundTo: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      destinationAsset: inputs.destinationAsset,
+      amount: inputs.amountIn,
+      refundTo: inputs.refundAddress ?? FACILITATOR_ADDRESS,
       refundType: "ORIGIN_CHAIN",
-      recipient: "merchant.near",
+      recipient: inputs.destinationAddress,
       recipientType: "DESTINATION_CHAIN",
       deadline: deadline.toISOString(),
     },
     quote: {
       depositAddress: MOCK_DEPOSIT_ADDRESS,
-      amountIn: "10500000",           // 10.50 USDC — what the buyer signs for
-      amountInFormatted: "10.50",
-      amountInUsd: "10.50",
-      minAmountIn: "10200000",         // 10.20 USDC — minimum accepted
-      amountOut: "10000000",           // 10.00 USDC — what merchant receives
-      amountOutFormatted: "10.00",
-      amountOutUsd: "10.00",
-      minAmountOut: "9950000",         // 9.95 USDC — slippage floor
+      // EXACT_INPUT: amountIn echoes inputs.amountIn (the buyer's exact authorisation).
+      amountIn: inputs.amountIn,
+      amountInFormatted: (Number(inputs.amountIn) / 1e6).toFixed(2),
+      amountInUsd: (Number(inputs.amountIn) / 1e6).toFixed(2),
+      minAmountIn: inputs.amountIn,
+      // Destination amount is variable under EXACT_INPUT — ~9.985 USDC after fees.
+      amountOut: "9985000",
+      amountOutFormatted: "9.985",
+      amountOutUsd: "9.99",
+      minAmountOut: "9950000", // 9.95 USDC — slippage floor
       deadline: deadline.toISOString(),
       timeWhenInactive: new Date(deadline.getTime() + 5 * 60 * 1000).toISOString(),
-      timeEstimate: 30,                // ~30 seconds estimated settlement
+      timeEstimate: 30, // ~30 seconds estimated settlement
     },
     ...overrides,
   };
@@ -102,14 +123,16 @@ export function mockDepositNotifyResponse(
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
- * A typical happy-path status polling sequence.
+ * A typical happy-path status polling sequence with rich `swapDetails`.
  *
- * In production, 1CS transitions: KNOWN_DEPOSIT_TX → PROCESSING → SUCCESS.
- * The buyer waits ~30s total.
+ * The terminal `SUCCESS` includes the new fields the receipt builder
+ * surfaces in `extensions.crossChain`: `slippage`, `amountOutFormatted`,
+ * `amountOutUsd`. Without these, receipt assertions degrade gracefully
+ * (the helper omits the field), which is the correct behavior under
+ * mid-flight observation races.
  *
- * @param options.destinationTxHash — Override the destination chain tx hash.
- * @param options.destinationExplorerUrl — Override the destination chain explorer URL
- *   (defaults to nearblocks.io; use e.g. "https://arbiscan.io/tx/" for Arbitrum).
+ * @param options.destinationTxHash       Override the destination tx hash.
+ * @param options.destinationExplorerUrl  Override the explorer URL.
  */
 export function mockHappyPathStatusSequence(options: {
   destinationTxHash?: string;
@@ -136,8 +159,11 @@ export function mockHappyPathStatusSequence(options: {
             explorerUrl: destExplorerUrl,
           },
         ],
-        amountIn: "10500000",
-        amountOut: "10000000",
+        amountIn: "10000000",
+        amountOut: "9985000",
+        amountOutFormatted: "9.985",
+        amountOutUsd: "9.99",
+        slippage: 0.0015,
       },
     },
   ];
@@ -159,7 +185,7 @@ export function mockFailedStatusSequence(): StatusPollResult[] {
             explorerUrl: "https://basescan.org/tx/0xf1e2d3c4b5a697f8e9d0c1b2a3948576061728394a5b6c7d8e9f0a1b2c3d4e5f",
           },
         ],
-        refundedAmount: "10500000",
+        refundedAmount: "10000000",
       },
     },
   ];
@@ -176,14 +202,8 @@ export function mockRefundedStatusSequence(): StatusPollResult[] {
       status: "REFUNDED",
       swapDetails: {
         originChainTxHashes: [],
-        refundedAmount: "10500000",
+        refundedAmount: "10000000",
       },
     },
   ];
 }
-
-// `mockTerminalStatus` used to live here as a one-shot helper returning
-// a single `StatusPollResult`. No test imported it — status sequences
-// are always built via `mockHappyPathStatusSequence` or inline arrays
-// in the tests that need terminal responses. Removed to keep the mock
-// surface honest.

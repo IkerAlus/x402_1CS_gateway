@@ -1,12 +1,14 @@
-# x402-1CS Gateway — User Guide
+# x402-1CS Swap Service — Buyer Guide
 
-This guide is for anyone with an EVM wallet (MetaMask, Rabby, a CLI wallet, or any ethers.js-compatible signer) who wants to pay for a resource protected by an x402-1CS gateway. It covers what you need, how the protocol works, and the exact steps to make a payment.
+This guide is for anyone with an EVM wallet (MetaMask, Rabby, a CLI signer, or any ethers.js-compatible private key) who wants to use the swap service to move USDC on Base into another asset on another chain. It covers what you need, how the protocol works, and the exact steps for paying.
 
 ---
 
 ## What is this?
 
-The x402-1CS Gateway is an HTTP payment gateway that lets you pay for web resources using USDC on an EVM chain (currently Base). Under the hood, your payment is routed through the NEAR Intents 1Click Swap system, which delivers the funds to the merchant on their configured destination chain — any of the 32+ chains supported by 1CS (EVM chains, NEAR, Solana, Stellar, Bitcoin, and more). You never need to interact with the destination chain directly — you pay in USDC on Base and the gateway handles the rest.
+An HTTP service where you GET `/api/swap?...` with the destination you want, sign one EIP-3009 authorization, and the gateway routes USDC on Base through [NEAR Intents 1Click Swap](https://docs.near-intents.org) to your chosen destination chain (any of 32+ — EVM chains, NEAR, Solana, Stellar, Bitcoin, …) at the address you specified.
+
+**You never need to interact with the destination chain to pay.** You sign one EIP-712 message on Base, the gateway broadcasts it on your behalf (paying gas), 1CS handles the cross-chain routing, and you receive the destination asset at your address.
 
 The payment protocol is **x402** (version 2), an extension of the HTTP `402 Payment Required` status code. It uses standard HTTP headers and EIP-712 typed-data signatures, so it works with any EVM wallet that can sign structured data.
 
@@ -14,153 +16,234 @@ The payment protocol is **x402** (version 2), an extension of the HTTP `402 Paym
 
 ## Requirements
 
-Before you can pay for a protected resource, you need:
-
 **1. An EVM wallet on Base (chain ID 8453)**
 
-Any wallet that can sign EIP-712 typed data works. This includes MetaMask, Rabby, Coinbase Wallet, or a raw private key with ethers.js. You need the wallet's private key if you're using the CLI test client or the `X402Client` library.
+Any wallet that can sign EIP-712 typed data: MetaMask, Rabby, Coinbase Wallet, or a private key in code. You need the private key if you're using the CLI test client or the `X402Client` library directly.
 
-**2. USDC on Base**
+**2. USDC on Base** (the origin asset)
 
-The gateway currently accepts USDC (contract `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`) on the Base L2 network. You need enough USDC to cover the price of the resource plus a small fee (typically under 5% for stablecoin-to-stablecoin swaps). For example, if the resource costs 1 USDC, you'll need roughly 1.05 USDC.
+The gateway accepts USDC at `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` on the Base L2. You need enough USDC to cover your `amountIn` plus the operator's margin (typically 30 bps = 0.3%). For example, paying `10000000` (10 USDC) at `OPERATOR_MARGIN_BPS=30` requires you to authorize `10030000` (10.03 USDC).
 
 How to get USDC on Base:
-
 - Bridge from Ethereum mainnet via [bridge.base.org](https://bridge.base.org)
-- Transfer from a centralized exchange that supports Base withdrawals (Coinbase, Binance)
+- Withdraw from a centralized exchange that supports Base (Coinbase, Binance, …)
 - Swap on a Base DEX (Aerodrome, Uniswap on Base)
 
-**3. A small amount of ETH on Base (not strictly required for you)**
+**3. ETH on Base — NOT required for paying**
 
-You do **not** need ETH for gas. The gateway's facilitator wallet pays gas on your behalf when broadcasting your signed authorization. However, if you want to check your balance or do other on-chain operations, you'll need a tiny amount of ETH.
+The gateway's facilitator wallet pays gas on your behalf when broadcasting your signed authorization. You only need ETH if you want to do other on-chain operations (check balance, manually call the token contract, etc.).
 
 ---
 
 ## How the protocol works
 
-The x402 payment flow has four steps. Understanding these helps you debug any issues.
+Four steps. Understanding them helps you debug any issues.
 
-**Step 1 — Request the resource (no payment)**
+### Step 1 — Request a quote (no payment)
 
-You send a normal HTTP GET to the protected endpoint. The gateway responds with **402 Payment Required** and a `PAYMENT-REQUIRED` header containing the payment terms.
+You send a GET to `/api/swap` with your destination as query parameters. The gateway calls 1CS for a quote and responds with **402 Payment Required**:
 
 ```
-GET /api/premium HTTP/1.1
+GET /api/swap?destinationChain=near&destinationAsset=nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1&destinationAddress=alice.near&amountIn=10000000 HTTP/1.1
 Host: gateway.example.com
 
--> 402 Payment Required
--> PAYMENT-REQUIRED: eyJ4NDAyVmVyc2lvbi...  (base64-encoded JSON)
--> X-RateLimit-Limit: 20
--> X-RateLimit-Remaining: 19
+→ 402 Payment Required
+→ PAYMENT-REQUIRED: eyJ4NDAyVmVyc2lvbi...  (base64-encoded JSON)
+→ X-RateLimit-Limit: 20
+→ X-RateLimit-Remaining: 19
 ```
 
-**Step 2 — Decode the payment requirements**
+#### Required query parameters
+
+| Param | Format | Meaning |
+|---|---|---|
+| `destinationChain` | lowercase prefix (`near`, `arbitrum`, `solana`, …) | Display label echoed in the receipt |
+| `destinationAsset` | `nep141:...` (1CS NEP-141 asset ID) | What you want to receive |
+| `destinationAddress` | chain-specific (NEAR account, EVM `0x…`, Stellar `G…`, etc.) | Where to send it |
+| `amountIn` | digit-only positive integer (smallest unit) | What you pay in USDC on Base |
+
+#### Optional query parameter
+
+| Param | Format | Meaning |
+|---|---|---|
+| `refundAddress` | EVM address (`0x` + 40 hex) | Where to send refunds if 1CS fails to route. Defaults to the gateway's wallet (operator forwards manually). **Strongly recommended to supply your own.** |
+
+#### What gets validated, when
+
+If you forget a field or send an invalid value, the gateway returns a **400 INVALID_INPUT** with structured per-field details — *before* contacting 1CS. Two layers of validation:
+
+1. **Zod schema** — required fields, regex patterns (e.g. `amountIn` must be `^[1-9]\d*$`).
+2. **Chain-format cross-check** — e.g. an EVM-format `destinationAddress` is rejected for a NEAR-native `destinationAsset`.
+
+```bash
+$ curl 'http://localhost:3402/api/swap'
+{
+  "error": "INVALID_INPUT",
+  "message": "Request input failed validation.",
+  "details": [
+    { "path": "destinationChain", "message": "Required" },
+    { "path": "destinationAsset", "message": "Required" },
+    { "path": "destinationAddress", "message": "Required" },
+    { "path": "amountIn", "message": "Required" }
+  ],
+  "correlationId": "a1b2c3d4"
+}
+```
+
+Unknown chain prefixes (e.g. a chain 1CS supports but the gateway doesn't yet recognise) are passed through to 1CS rather than rejected — that's deliberate.
+
+### Step 2 — Decode the 402 envelope
 
 The `PAYMENT-REQUIRED` header is a base64-encoded JSON envelope:
 
 ```json
 {
   "x402Version": 2,
-  "resource": {
-    "url": "/api/premium",
-    "description": "x402-1CS protected resource"
-  },
+  "resource": { "url": "/api/swap?destinationChain=near&...", "description": "x402-1CS swap service" },
   "accepts": [
     {
       "scheme": "exact",
       "network": "eip155:8453",
       "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-      "amount": "1006482",
-      "payTo": "0x9A6AFBA07b35ad1defd19E9D7f2306e64FeD01fc",
+      "amount": "10030000",
+      "payTo": "0x7a16fF8270133F063aAb6C9977183D9e72835428",
       "maxTimeoutSeconds": 86370,
       "extra": {
         "name": "USD Coin",
         "version": "2",
-        "assetTransferMethod": "eip3009"
+        "assetTransferMethod": "eip3009",
+        "crossChain": {
+          "protocol": "1cs",
+          "quoteId": "corr-a1b2c3d4-...",
+          "destinationRecipient": "alice.near",
+          "destinationAsset": "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+          "amountOut": "9985000",
+          "amountOutFormatted": "9.985",
+          "amountOutUsd": "9.99",
+          "amountInUsd": "10.03",
+          "refundTo": "0x...",
+          "operatorFee": { "bps": 30, "amount": "30000", "currency": "USDC" }
+        }
       }
     }
   ]
 }
 ```
 
-Key fields:
+#### Fields you'll use to sign
 
-- **`amount`** — The exact amount you must authorize, in the token's smallest unit (USDC has 6 decimals, so `1006482` = ~1.006 USDC). This is the worst-case price; if the swap executes at a better rate, the difference is refunded to the gateway's refund address.
-- **`payTo`** — The 1CS deposit address. This is where your USDC will be sent on-chain. It is a unique per-request address generated by the 1Click Swap system.
-- **`network`** — The CAIP-2 chain identifier. `eip155:8453` means Base mainnet.
-- **`asset`** — The ERC-20 token contract address (USDC on Base).
-- **`extra.assetTransferMethod`** — Either `"eip3009"` (preferred) or `"permit2"`. This tells you which signing method to use.
-- **`extra.name`** and **`extra.version`** — The EIP-712 domain parameters for the token. These must match exactly when signing (`"USD Coin"` and `"2"` for USDC on Base).
-- **`maxTimeoutSeconds`** — How long the payment authorization is valid.
+- **`amount`** — exactly what you authorize, in the token's smallest unit. **This is your `amountIn` plus the operator margin** (30 bps default).
+- **`payTo`** — the unique 1CS deposit address generated for *this* quote. Funds you authorize will go here on Base; 1CS detects the deposit and routes them cross-chain.
+- **`network`** — CAIP-2 chain ID (`eip155:8453` = Base mainnet).
+- **`asset`** — the ERC-20 token contract (USDC on Base).
+- **`extra.name` / `extra.version`** — EIP-712 domain parameters for the token (`"USD Coin"` and `"2"` for USDC on Base — must match exactly).
+- **`extra.assetTransferMethod`** — `"eip3009"` (default, gasless) or `"permit2"` (requires a one-time on-chain approval to Permit2).
+- **`maxTimeoutSeconds`** — how long the authorization stays valid.
 
-**Step 3 — Sign the payment**
+#### Fields for buyer-facing UX (the `extra.crossChain` block)
 
-You pick one entry from the `accepts` array (there's currently one) and sign an EIP-712 typed-data message authorizing the transfer. The signing method depends on `extra.assetTransferMethod`:
+The gateway carries the underlying 1CS quote metadata at `accepts[0].extra.crossChain` — purely informational, **never used for signing**. Your client can ignore it, or surface a richer summary:
 
-- **EIP-3009 (`transferWithAuthorization`)** — You sign a `TransferWithAuthorization` message that authorizes moving your USDC to the `payTo` address. This is a gasless approval — you don't send a transaction, you just sign a message.
-- **Permit2** — You sign a Permit2 witness message. This requires that you've previously approved the Permit2 contract to spend your USDC (a one-time on-chain transaction).
+```ts
+const cross = accepted.extra.crossChain as
+  | {
+      protocol: "1cs";
+      quoteId: string;                     // 1CS correlation ID — quote when contacting support
+      destinationRecipient: string;        // your destination address (echoed)
+      destinationAsset: string;            // the asset you'll receive
+      amountOut: string;                   // expected destination amount (smallest unit)
+      amountOutFormatted: string;          // human-readable (e.g. "9.985")
+      amountOutUsd: string;                // USD value of what you'll receive
+      amountInUsd: string;                 // USD value of what you'll pay (incl. margin)
+      refundFee?: string;                  // optional — chain-dependent
+      refundTo: string;                    // your refundAddress, or the gateway fallback
+      depositMemo?: string;                // optional — required by Stellar/XRP/Cosmos
+      operatorFee: { bps: number; amount: string; currency: "USDC" };
+    }
+  | undefined;
 
-For EIP-3009 (the default), the EIP-712 domain and message are:
+if (cross?.protocol === "1cs") {
+  console.log(
+    `Paying $${cross.amountInUsd} → ${cross.amountOutFormatted} ${cross.destinationAsset.split(':')[1]} ` +
+    `(operator fee: ${cross.operatorFee.amount} ${cross.operatorFee.currency} = ${cross.operatorFee.bps}bps). ` +
+    `Refunds → ${cross.refundTo}`,
+  );
+}
+```
+
+The full JSON schema is published at `/openapi.json#/components/schemas/CrossChainQuoteExtra` if you want a machine-readable contract.
+
+### Step 3 — Sign the payment
+
+Pick the entry from `accepts` (there's currently one) and sign an EIP-712 typed-data message authorizing the transfer.
+
+For **EIP-3009 (gasless, default)**:
 
 ```
 Domain:
-  name:              "USD Coin"           <- from extra.name
-  version:           "2"                  <- from extra.version
-  chainId:           8453                 <- from network (eip155:8453)
-  verifyingContract:  0x833589f...        <- from asset
+  name:              "USD Coin"           ← from extra.name
+  version:           "2"                  ← from extra.version
+  chainId:           8453                 ← from network (eip155:8453)
+  verifyingContract: 0x833589f...         ← from asset
 
 Message (TransferWithAuthorization):
   from:        your wallet address
-  to:          the payTo address from step 2
-  value:       the amount from step 2
-  validAfter:  0                          <- immediately valid
-  validBefore: now + maxTimeoutSeconds     <- expiration timestamp (unix seconds)
-  nonce:       random 32-byte hex value    <- unique per authorization
+  to:          the payTo address          ← the 1CS deposit address
+  value:       the amount                 ← amountIn + operator margin
+  validAfter:  0                          ← immediately valid
+  validBefore: now + maxTimeoutSeconds    ← expiration (unix seconds)
+  nonce:       random 32-byte hex         ← unique per authorization
 ```
 
-You then construct the `PAYMENT-SIGNATURE` payload:
+Then construct the `PAYMENT-SIGNATURE` payload:
 
 ```json
 {
   "x402Version": 2,
-  "resource": { "url": "/api/premium" },
+  "resource": { "url": "/api/swap?destinationChain=near&..." },
   "accepted": { "...the accepted payment option from step 2..." },
   "payload": {
     "signature": "0x...",
     "authorization": {
       "from": "0xYourAddress",
-      "to": "0x...depositAddress...",
-      "value": "1006482",
+      "to": "0x7a16fF82...",
+      "value": "10030000",
       "validAfter": "0",
-      "validBefore": "1743610000",
+      "validBefore": "1762800000",
       "nonce": "0x..."
     }
   }
 }
 ```
 
-**Step 4 — Send the signed payment**
+For **Permit2**, you need a prior `approve()` to the Permit2 contract. The signing message structure differs — see [src/client/signer.ts](../src/client/signer.ts) `signPermit2` for the exact shape.
 
-Retry the same GET request with the `PAYMENT-SIGNATURE` header (base64-encoded):
+### Step 4 — Submit the signed payment
+
+Retry the same GET request with the same query string AND the `PAYMENT-SIGNATURE` header (base64-encoded):
 
 ```
-GET /api/premium HTTP/1.1
+GET /api/swap?destinationChain=near&...  HTTP/1.1
 Host: gateway.example.com
-PAYMENT-SIGNATURE: eyJ4NDAyVmVyc2lvbi...  (base64-encoded JSON)
+PAYMENT-SIGNATURE: eyJ4NDAyVmVyc2lvbi...
 
--> 200 OK
--> PAYMENT-RESPONSE: eyJzdWNjZXNzIjp0cnVl...  (base64-encoded JSON)
--> { "message": "You've paid! Here is your premium content." }
+→ 200 OK
+→ PAYMENT-RESPONSE: eyJzdWNjZXNzIjp0cnVl...
+→ {}
 ```
 
 This step blocks while the gateway:
 
 1. Verifies your signature and on-chain USDC balance
-2. Broadcasts the `transferWithAuthorization` on Base (the facilitator pays gas)
-3. Notifies the 1Click Swap system
-4. Polls until the cross-chain swap completes (~30-60 seconds)
+2. Broadcasts `transferWithAuthorization` on Base (the facilitator pays gas)
+3. Notifies 1CS of the deposit
+4. Polls 1CS until the cross-chain swap completes (~30–60 seconds)
 
-The response includes a `PAYMENT-RESPONSE` header with settlement details:
+**The 200 body is `{}` by design.** The settlement receipt is in the `PAYMENT-RESPONSE` header.
+
+#### The receipt
+
+The `PAYMENT-RESPONSE` header is a base64-encoded JSON `SettleResponse`. The swap-specific fields live in `extensions.crossChain` (a `CrossChainSettlementExtra`):
 
 ```json
 {
@@ -168,58 +251,35 @@ The response includes a `PAYMENT-RESPONSE` header with settlement details:
   "payer": "0xYourAddress",
   "transaction": "0xBaseTxHash...",
   "network": "eip155:8453",
-  "amount": "1006482",
+  "amount": "10030000",
   "extensions": {
     "crossChain": {
       "settlementType": "crosschain-1cs",
+      "destinationTxHashes": [
+        { "hash": "9XzKqRu...", "explorerUrl": "https://nearblocks.io/txns/9XzKqRu..." }
+      ],
+      "destinationChain": "near",
+      "destinationRecipient": "alice.near",
+      "destinationAsset": "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+      "destinationAmount": "9985000",
+      "destinationAmountFormatted": "9.985",
+      "destinationAmountUsd": "9.99",
+      "slippage": 0.0015,
+      "operatorFee": { "bps": 30, "amount": "30000", "currency": "USDC" },
       "swapStatus": "SUCCESS",
-      "destinationTxHashes": ["..."],
-      "destinationChain": "near",   // Varies: "eip155:42161" for Arbitrum, "eip155:1" for ETH, etc.
-      "destinationAmount": "1000000",
-      "correlationId": "corr-..."
+      "correlationId": "corr-a1b2c3d4-..."
     }
   }
 }
 ```
 
-### Optional: the `extra.crossChain` informational block
-
-Every 402 envelope from this gateway also carries a gateway-specific informational block at `accepts[0].extra.crossChain`. It describes the underlying cross-chain swap — the 1CS quote ID, expected destination amount, refund destination, USD values, and (on chains that need one) a deposit memo. The block is **purely informational**: it is **never used for signing**. Your client can safely ignore it if you don't need it.
-
-If you do want to surface richer UX — "you'll authorize $1.05 on Base, the merchant will receive 1.00 USDT on NEAR, refunds go to `0x…`" — read it like this:
-
-```ts
-const cross = accepted.extra.crossChain as
-  | {
-      protocol: "1cs";
-      quoteId: string;
-      destinationRecipient: string;
-      destinationAsset: string;
-      amountOut: string;
-      amountOutFormatted: string;
-      amountOutUsd: string;
-      amountInUsd: string;
-      refundFee?: string;
-      refundTo: string;
-      depositMemo?: string;
-    }
-  | undefined;
-
-if (cross?.protocol === "1cs") {
-  console.log(
-    `Paying $${cross.amountInUsd} → merchant receives ${cross.amountOutFormatted} ` +
-    `(${cross.destinationAsset}). Refunds go to ${cross.refundTo}. Quote: ${cross.quoteId}`,
-  );
-}
-```
-
-All fields are strings (or numbers for the few numeric ones). Optional fields (`refundFee`, `depositMemo`) are omitted when the destination chain doesn't require them — check for key presence rather than null. The full JSON schema is published at `/openapi.json#/components/schemas/CrossChainQuoteExtra` if you want a machine-readable contract.
+This is the on-the-wire contract — published as `components.schemas.CrossChainSettlementExtra` in `/openapi.json`. It's the standardized x402 way to carry protocol-specific settlement metadata; any conforming x402 client / indexer / explorer can consume it without route-specific knowledge.
 
 ---
 
-## Easiest method: using the X402Client library
+## Easiest method: use the X402Client library
 
-The repository includes a TypeScript client library (`src/client/`) that handles the entire flow in a single call:
+The repository ships a TypeScript client (`src/client/`) that handles the entire flow:
 
 ```ts
 import { ethers } from "ethers";
@@ -228,305 +288,89 @@ import { X402Client } from "./src/client/index.js";
 const wallet = new ethers.Wallet("0xYourBuyerPrivateKey");
 const client = new X402Client({ gatewayUrl: "http://localhost:3402" });
 
-const result = await client.payAndFetch(wallet, "/api/premium");
-
-if (result.success) {
-  console.log("Resource:", result.body);
-  console.log("Settlement tx:", result.paymentResponse?.transaction);
-} else {
-  console.log("Failed:", result.error);
-}
-```
-
-The `X402Client` handles all four protocol steps internally: request -> decode 402 -> sign -> submit. See [README § 7 Programmatic client](../README.md#7-programmatic-client-srcclient) for step-by-step usage and the full exported API.
-
----
-
-## Concrete steps: paying via the test client (CLI)
-
-The repository includes a test client script that automates the full flow.
-
-### 1. Clone and install
-
-```bash
-git clone <repo-url>
-cd x402_1CS_gateway
-npm install
-```
-
-### 2. Start the gateway (in one terminal)
-
-The gateway operator must configure and start the server. If you're testing locally, the simplest method:
-
-```bash
-# Edit .env with your config (see README § 2 Configure environment)
-npx env-cmd npx tsx src/server.ts
-```
-
-Or use explicit exports (quote values with spaces):
-
-```bash
-export ONE_CLICK_JWT="<gateway-operator-jwt>"
-export MERCHANT_RECIPIENT="merchant.near"
-export MERCHANT_ASSET_OUT="nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
-export MERCHANT_AMOUNT_OUT="1000000"
-export ORIGIN_NETWORK="eip155:8453"
-export ORIGIN_ASSET_IN="nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near"
-export ORIGIN_TOKEN_ADDRESS="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-export ORIGIN_RPC_URLS="https://mainnet.base.org"
-export FACILITATOR_PRIVATE_KEY="0x<funded-facilitator-key>"
-export GATEWAY_REFUND_ADDRESS="0x<facilitator-address>"
-export TOKEN_NAME="USD Coin"
-export TOKEN_VERSION="2"
-
-npx tsx src/server.ts
-```
-
-### 3. Dry run (no funds needed, in another terminal)
-
-```bash
-npx tsx scripts/test-client.ts
-```
-
-This sends a GET request, receives the 402, decodes the payment requirements, and shows you exactly what it would sign. No funds are transferred.
-
-Output looks like:
-
-```
-===============================================================
-  x402 Test Client
-  Gateway:   http://localhost:3402
-  Resource:  /api/premium
-  Buyer:     0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
-  Dry run:   true
-===============================================================
-
-Step 1: GET (no payment header) -> expecting 402...
-  Status: 402
-  Got 402 with PAYMENT-REQUIRED header
-
-Step 2: Decoded PaymentRequired:
-  x402Version:       2
-  resource.url:      /api/premium
-  accepts count:     1
-
-  Payment option [0]:
-    scheme:              exact
-    network:             eip155:8453
-    asset:               0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
-    amount:              1006482 (smallest unit)
-    amount (human):      1.006482 USDC
-    payTo:               0x7a16fF82...
-    maxTimeoutSeconds:   86370
-    extra.name:          USD Coin
-    extra.version:       2
-    extra.transferMethod: eip3009
-
-===============================================================
-  DRY RUN -- stopping here.
-  ...
-===============================================================
-```
-
-### 4. Real payment
-
-Fund your buyer wallet with at least 2 USDC on Base (to cover the price + fees). Then:
-
-```bash
-DRY_RUN=false BUYER_PRIVATE_KEY=0xYourBuyerPrivateKey npx tsx scripts/test-client.ts
-```
-
-The client will sign a real EIP-3009 authorization, the gateway will broadcast it on-chain, and after ~30-60 seconds the cross-chain swap completes. You'll see:
-
-```
-Step 4: GET with PAYMENT-SIGNATURE -> awaiting settlement...
-  (This may take 30-60 seconds for the cross-chain swap...)
-  Status: 200 (took 34.2s)
-  Payment accepted!
-
-  PAYMENT-RESPONSE:
-    success:     true
-    transaction: 0xabc123...
-    network:     eip155:8453
-    payer:       0xYourAddress
-```
-
----
-
-## Concrete steps: paying programmatically (ethers.js)
-
-If you prefer to implement the protocol yourself without the `X402Client` library, here's the raw ethers.js code. This works in Node.js or any environment with `fetch` and ethers.js v6.
-
-```typescript
-import { ethers } from "ethers";
-
-const GATEWAY_URL = "https://gateway.example.com";
-const RESOURCE_PATH = "/api/premium";
-
-// Your buyer wallet
-const wallet = new ethers.Wallet("0xYourPrivateKey");
-
-// -- Step 1: Request without payment ----------------------------
-const res = await fetch(`${GATEWAY_URL}${RESOURCE_PATH}`);
-// res.status === 402
-
-// -- Step 2: Decode the 402 ------------------------------------
-const header = res.headers.get("payment-required")!;
-const paymentRequired = JSON.parse(
-  Buffer.from(header, "base64").toString("utf8"),
-);
-const accepted = paymentRequired.accepts[0];
-
-// -- Step 3: Sign EIP-3009 authorization -----------------------
-const chainId = parseInt(accepted.network.split(":")[1], 10);
-const nowSec = Math.floor(Date.now() / 1000);
-
-const authorization = {
-  from: wallet.address,
-  to: accepted.payTo,
-  value: accepted.amount,
-  validAfter: "0",
-  validBefore: String(nowSec + accepted.maxTimeoutSeconds),
-  nonce: ethers.hexlify(ethers.randomBytes(32)),
-};
-
-const domain = {
-  name: accepted.extra.name,     // "USD Coin"
-  version: accepted.extra.version, // "2"
-  chainId,
-  verifyingContract: accepted.asset,
-};
-
-const types = {
-  TransferWithAuthorization: [
-    { name: "from", type: "address" },
-    { name: "to", type: "address" },
-    { name: "value", type: "uint256" },
-    { name: "validAfter", type: "uint256" },
-    { name: "validBefore", type: "uint256" },
-    { name: "nonce", type: "bytes32" },
-  ],
-};
-
-const signature = await wallet.signTypedData(domain, types, authorization);
-
-// -- Step 4: Retry with payment --------------------------------
-const paymentPayload = {
-  x402Version: paymentRequired.x402Version,
-  resource: paymentRequired.resource,
-  accepted,
-  payload: { signature, authorization },
-};
-
-const encoded = Buffer.from(JSON.stringify(paymentPayload)).toString("base64");
-
-const paymentRes = await fetch(`${GATEWAY_URL}${RESOURCE_PATH}`, {
-  headers: { "PAYMENT-SIGNATURE": encoded },
+const result = await client.payAndFetch(wallet, "/api/swap", {
+  query: {
+    destinationChain: "near",
+    destinationAsset: "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+    destinationAddress: "alice.near",
+    amountIn: "10000000",
+    // refundAddress: "0xYourEvmRefundAddress",  // optional but recommended
+  },
 });
 
-if (paymentRes.status === 200) {
-  const body = await paymentRes.json();
-  console.log("Paid!", body);
-
-  // Decode settlement receipt
-  const receiptHeader = paymentRes.headers.get("payment-response");
-  if (receiptHeader) {
-    const receipt = JSON.parse(
-      Buffer.from(receiptHeader, "base64").toString("utf8"),
-    );
-    console.log("Settlement tx:", receipt.transaction);
-  }
+if (result.success) {
+  // Body is `{}` by design — receipt is in result.paymentResponse.extensions.crossChain
+  const receipt = result.paymentResponse?.extensions?.crossChain;
+  console.log(`Origin tx:      ${result.paymentResponse?.transaction}`);
+  console.log(`Destination tx: ${receipt?.destinationTxHashes?.[0]?.hash}`);
+  console.log(`Slippage:       ${receipt?.slippage}`);
+  console.log(`Operator fee:   ${receipt?.operatorFee?.amount} ${receipt?.operatorFee?.currency}`);
+} else {
+  console.log(`Failed (status ${result.status}): ${result.error}`);
 }
 ```
 
-> **Tip**: The `X402Client` library (see section above) does all of this in a single `payAndFetch()` call and handles edge cases like header encoding, error extraction, and payment option selection automatically.
+The client handles all four protocol steps internally (request → decode → sign → submit). The `query` option is sent on both the initial 402 request AND the signed retry, so the URL is stable across the round-trip.
 
 ---
 
-## Paying with Permit2 (alternative method)
+## CLI test client
 
-If the gateway advertises `extra.assetTransferMethod: "permit2"`, the signing is slightly different. You need to have previously approved the Permit2 contract (`0x000000000022D473030F116dDEE9F6B43aC78BA3`) to spend your USDC. This is a one-time on-chain transaction:
+The repository includes `scripts/test-client.ts` for manual end-to-end testing.
 
-```typescript
-// One-time approval (sends a real transaction, costs gas)
-const usdc = new ethers.Contract(USDC_ADDRESS, [
-  "function approve(address,uint256) returns (bool)",
-], walletWithProvider);
-await usdc.approve("0x000000000022D473030F116dDEE9F6B43aC78BA3", ethers.MaxUint256);
+```bash
+# Dry run — no funds needed, prints the 402 envelope and stops
+npx tsx scripts/test-client.ts
+
+# Custom destination via env vars
+SWAP_DESTINATION_CHAIN=arbitrum \
+SWAP_DESTINATION_ASSET=nep141:arb-0xaf88d065e77c8cc2239327c5edb3a432268e5831.omft.near \
+SWAP_DESTINATION_ADDRESS=0xYourArbAddress \
+SWAP_AMOUNT_IN=10000000 \
+npx tsx scripts/test-client.ts
+
+# Real payment (requires funded buyer wallet on the origin chain)
+DRY_RUN=false BUYER_PRIVATE_KEY=0x... npx tsx scripts/test-client.ts
 ```
 
-After that, the signing flow uses the Permit2 witness types instead of `TransferWithAuthorization`. See the test client (`scripts/test-client.ts`) for the full Permit2 signing code, or use the `X402Client` library which auto-detects the transfer method:
-
-```ts
-// X402Client handles Permit2 automatically — same API as EIP-3009
-const result = await client.payAndFetch(wallet, "/api/premium");
-```
+The script prints each step: 402 envelope, signed payload, settlement response (decoded). On success it pretty-prints the receipt — origin/destination tx hashes, slippage, operator fee, correlation ID.
 
 ---
 
-## What happens to your money
+## Errors you might see
 
-Here's the exact fund flow:
+| Status | error code | What happened | What to do |
+|---|---|---|---|
+| `400` | `INVALID_INPUT` | Your query failed Zod validation OR `validateBuyerDestination` chain-format check | Read `details[].path` + `message` and fix the field |
+| `402` | (with PAYMENT-REQUIRED) | Either no signature was sent, or the signature was rejected (signer mismatch, balance too low, signed wrong amount, etc.) | Check the `error` field on the 402 envelope, sign again |
+| `409` | `NONCE_ALREADY_USED` | Reusing an EIP-3009 nonce that was already broadcast | Generate a fresh random nonce and re-sign |
+| `429` | `RATE_LIMITED` | You hit the per-IP quote rate limit | Back off; check `Retry-After` header |
+| `502` | `SWAP_FAILED` | 1CS reported `FAILED` or `REFUNDED` after your transfer landed | Check `correlationId`, contact the gateway operator. Refund handling depends on whether you supplied `refundAddress` (1CS routes refunds to it automatically when supplied) |
+| `503` | `QUOTE_UNAVAILABLE` / `AUTHENTICATION_ERROR` / `SERVICE_UNAVAILABLE` / `DEADLINE_TOO_SHORT` / `INSUFFICIENT_GAS` | Upstream issue at 1CS, JWT, or facilitator gas | Try again shortly. Persistent → contact the operator with the correlation ID |
+| `504` | `SWAP_TIMEOUT` | 1CS polling exceeded the gateway's max poll time mid-settlement | Your transfer may still complete on-chain. Contact the operator with the correlation ID |
 
-1. **You authorize** — Your wallet signs a gasless EIP-712 message. No tokens move yet.
-2. **Gateway broadcasts** — The facilitator wallet calls `transferWithAuthorization` on the USDC contract. Your USDC is transferred from your wallet to the 1CS deposit address. This is visible as a standard ERC-20 transfer on Basescan.
-3. **1CS executes the swap** — The 1Click Swap system picks up the deposit and executes a cross-chain swap to the merchant's configured destination chain. This takes 20-60 seconds.
-4. **Merchant receives funds** — The merchant receives the agreed amount on their configured destination chain (NEAR, Arbitrum, Ethereum, etc.).
-5. **You receive the resource** — The gateway returns the protected content with a 200 response.
-
-If the swap fails for any reason, 1CS refunds the deposited USDC to the gateway's refund address. The gateway operator is responsible for forwarding refunds back to buyers (this is handled operationally in the current version).
-
----
-
-## Error responses you may encounter
-
-| HTTP Status | Meaning | What to do |
-|---|---|---|
-| **402** | Payment required. Check the `PAYMENT-REQUIRED` header for terms. | Decode the header, sign the payment, retry. |
-| **402** (with `error` field) | Your payment was rejected. The `error` field explains why (e.g., "Amount too low", "Insufficient token balance"). | Check your USDC balance and the amount you signed for. |
-| **400** | Malformed `PAYMENT-SIGNATURE` header. | Check that the header is valid base64-encoded JSON with the correct structure. |
-| **409** | Authorization nonce already used (replay). | Generate a new random nonce and re-sign. |
-| **429** | Rate limited. Too many 402 requests from your IP. | Wait for the `Retry-After` header duration (in seconds), then retry. |
-| **502** | The cross-chain swap failed or was refunded. Check the `PAYMENT-RESPONSE` header for details. | Your funds may have been refunded to the gateway's refund address. Contact the gateway operator. |
-| **503** | Gateway can't reach the 1CS API, the facilitator wallet has insufficient gas, or all settlement slots are occupied. | Try again later. Not a problem with your payment. |
-| **504** | The cross-chain swap timed out. | The swap may still complete. Check the `PAYMENT-RESPONSE` header for the deposit address, then check 1CS status directly. |
+Every error response carries a short `correlationId` (8 hex chars). Quote it when reporting issues — operators can grep server logs for the full context.
 
 ---
 
-## Security considerations
+## Refund flow
 
-**Your private key is never sent to the gateway.** You only send a signed message (the EIP-712 signature). The gateway cannot extract your private key from the signature.
+If 1CS fails to complete your swap:
+- **If you supplied `refundAddress`** (recommended): 1CS sends the refund directly to your EVM address on Base — no operator action needed. This is set as `refundTo` on the 1CS quote at the time you signed.
+- **If you omitted `refundAddress`**: 1CS sends the refund to the gateway's wallet (`GATEWAY_REFUND_ADDRESS`). The operator then has to forward it to you manually using the `correlationId` to identify your settlement. The gateway has no automated path here yet — it's tracked as item #11 in [docs/TODO.md](TODO.md).
 
-**The authorization is scoped.** Your EIP-3009 signature authorizes a transfer of a specific amount, to a specific address (the 1CS deposit address), valid for a limited time. It cannot be used to take more USDC than specified, send to a different address, or be replayed after expiration.
-
-**The nonce prevents replay.** Each authorization includes a random nonce that can only be used once on-chain. Even if someone intercepts your signed payload, they cannot replay it after the first use.
-
-**Verify the gateway.** Before sending a payment, check that the `payTo` address, `amount`, `network`, and `asset` in the 402 response make sense. A malicious gateway could point `payTo` to an address it controls. Only pay gateways you trust.
+**Always supply `refundAddress` when you can.** It's a one-line change in your client and removes a manual operator step on failure.
 
 ---
 
-## FAQ
+## Reference
 
-**Q: Do I need ETH for gas?**
-No. The gateway's facilitator wallet pays gas for the on-chain `transferWithAuthorization` call. You only need USDC.
+| Doc | Purpose |
+|---|---|
+| [README.md](../README.md) | Project overview, setup, gateway operator quickstart |
+| [docs/OPERATOR_GUIDE.md](OPERATOR_GUIDE.md) | Operator-facing — regulatory, KYC/sanctions, refund flow, margin guidance |
+| [docs/TODO.md](TODO.md) | Production-readiness checklist |
+| [implementation_plan.md](../implementation_plan.md) | Swap-mode pivot execution log |
+| [SWAP_AS_RESOURCE.md](../SWAP_AS_RESOURCE.md) | Original product brief — explains *why* this exists |
 
-**Q: How long does payment take?**
-The signing step is instant. After you submit the signed payment, the gateway takes 30-60 seconds to broadcast and wait for the cross-chain swap to complete. Your HTTP request blocks during this time.
-
-**Q: What if my payment is stuck?**
-If the gateway returns a timeout (504), the swap may still be processing. The `PAYMENT-RESPONSE` header will include a correlation ID and deposit address. You can check the swap status at `https://1click.chaindefuser.com/v0/status?depositAddress=0x...` or contact the gateway operator.
-
-**Q: Can I pay from a different chain?**
-Currently only Base (eip155:8453) is supported as the origin chain. The gateway operator configures which chain and token to accept. Future versions may support multiple origin chains.
-
-**Q: What USDC amount should I hold?**
-Hold slightly more than the `amount` shown in the 402 response. The amount includes the 1CS swap fee (typically 0.5-3% for stablecoins). For a 1 USDC resource, having 2 USDC in your wallet is safe.
-
-**Q: What happens if the swap fails?**
-If 1CS cannot complete the swap, it refunds the deposited USDC to the gateway's refund address. The gateway returns a 502 error with details in the `PAYMENT-RESPONSE` header. Contact the gateway operator for a manual refund.
-
-**Q: Is my payment idempotent?**
-Yes. If you retry the same signed payment after a successful settlement, the gateway returns the cached 200 response without charging you again. The EIP-3009 nonce ensures the on-chain transfer can only happen once.
-
-**Q: What's the easiest way to integrate programmatically?**
-Use the `X402Client` library from `src/client/`. A single `payAndFetch(wallet, path)` call handles the entire protocol. See the "Easiest method" section above.
+The `/openapi.json` and `/.well-known/x402` endpoints expose machine-readable schemas for both the 402 envelope and the receipt, suitable for automated discovery (x402scan, agent SDKs).

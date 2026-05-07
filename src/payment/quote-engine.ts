@@ -1,18 +1,26 @@
 /**
  * Quote Engine — translates 1CS quotes into x402 PaymentRequirements.
  *
- * This module is the  translation layer between the NEAR Intents
- * 1Click Swap API and the x402 payment protocol. It:
+ * Translation layer between the NEAR Intents 1Click Swap API and the x402
+ * payment protocol for the swap-as-resource service. It:
  *
- * 1. Calls `POST /v0/quote` with `swapType: EXACT_OUTPUT`
- * 2. Maps the 1CS response into an x402 `PaymentRequirements` object
- * 3. Persists a new `SwapState` (phase = QUOTED) in the store
- * 4. Returns both for the middleware to build the 402 response
+ * 1. Validates the buyer's destination format against the destination chain
+ * 2. Calls `POST /v0/quote` with `swapType: EXACT_INPUT` and the buyer's
+ *    destination + amount + (optional) refund address
+ * 3. Applies the operator margin to the 1CS-quoted `amountIn`
+ * 4. Maps the 1CS response into an x402 `PaymentRequirements` object
+ *    (with `payTo = depositAddress`, the foundational trick)
+ * 5. Persists a new `SwapState` (phase = QUOTED) keyed by the deposit address
+ * 6. Returns both for the middleware to build the 402 response
  *
+ * Slippage upside flows to the buyer (EXACT_INPUT semantics): the destination
+ * amount becomes the variable, the buyer's signed authorisation is locked
+ * to the exact `amountIn`. The operator earns the configured margin on top
+ * of 1CS's quote — surfaced transparently in `extra.crossChain.operatorFee`.
  */
 
 import type { GatewayConfig } from "../infra/config.js";
-import type { QuoteResponse } from "../types.js";
+import type { QuoteResponse, SwapRequestInput } from "../types.js";
 import {
   OneClickService,
   OpenAPI,
@@ -32,6 +40,7 @@ import {
   AuthenticationError,
   ServiceUnavailableError,
   DeadlineTooShortError,
+  InvalidInputError,
   GatewayError,
 } from "../types.js";
 import type { ErrorContext } from "../types.js";
@@ -77,35 +86,43 @@ export const defaultQuoteFn: QuoteFn = (request) =>
   OneClickService.getQuote(request);
 
 /**
- * Build an x402 `PaymentRequirements` object by requesting a 1CS quote.
+ * Build an x402 `PaymentRequirements` object by requesting a 1CS quote
+ * for the buyer's destination.
  *
- * Configures the 1CS SDK, calls `/v0/quote` with EXACT_OUTPUT, maps the
+ * Configures the 1CS SDK, validates the buyer's destination format, calls
+ * `/v0/quote` with EXACT_INPUT, applies the operator margin, maps the
  * response to x402 fields, persists the new SwapState, and returns both.
  *
  * @param cfg          Validated gateway configuration.
  * @param store        State persistence layer.
  * @param _resourceUrl The URL of the protected resource (reserved for logging/tracing).
+ * @param inputs       Buyer-supplied destination params from the parsed query string.
  * @param quoteFn      Injectable quote function (defaults to real 1CS SDK call).
  *
- * @throws {QuoteUnavailableError}   1CS returned 400 (bad asset pair, etc.)
- * @throws {AuthenticationError}     1CS returned 401 (JWT expired/invalid)
- * @throws {ServiceUnavailableError} 1CS returned 5xx or network error
- * @throws {DeadlineTooShortError}   Quote deadline leaves < quoteExpiryBufferSec
+ * @throws {InvalidInputError}       Buyer's destination/recipient combination is malformed (400)
+ * @throws {QuoteUnavailableError}   1CS returned 400 (bad asset pair, etc.) (503)
+ * @throws {AuthenticationError}     1CS returned 401 (JWT expired/invalid) (503)
+ * @throws {ServiceUnavailableError} 1CS returned 5xx or network error (503)
+ * @throws {DeadlineTooShortError}   Quote deadline leaves < quoteExpiryBufferSec (503)
  */
 export async function buildPaymentRequirements(
   cfg: GatewayConfig,
   store: StateStore,
   _resourceUrl: string,
+  inputs: SwapRequestInput,
   quoteFn: QuoteFn = defaultQuoteFn,
 ): Promise<BuildPaymentRequirementsResult> {
   // ── 1. Configure the 1CS SDK ──────────────────────────────────────
   configureOneClickSdk(cfg);
 
-  // ── 2. Build the quote request ────────────────────────────────────
-  const deadline = buildQuoteDeadline(cfg);
-  const quoteRequest = buildQuoteRequest(cfg, deadline);
+  // ── 2. Hard-fail on chain-format mismatches before quoting ────────
+  //    Catches the common "EVM destination + NEAR address" class of bugs
+  //    before paying for an upstream quote. Returns 400 INVALID_INPUT.
+  validateBuyerDestination(inputs);
 
-  // ── 3. Call 1CS /v0/quote ─────────────────────────────────────────
+  // ── 3. Build + send the quote request ─────────────────────────────
+  const deadline = buildQuoteDeadline(cfg);
+  const quoteRequest = buildSwapQuoteRequest(cfg, inputs, deadline);
   const quoteResponse = await requestQuote(quoteRequest, quoteFn);
 
   // ── 4. Validate the response ──────────────────────────────────────
@@ -121,7 +138,6 @@ export async function buildPaymentRequirements(
     );
   }
 
-  // Validate amountIn is present and meaningful
   const amountIn = quoteResponse.quote.amountIn;
   if (!amountIn || amountIn === "0") {
     throw new QuoteUnavailableError(
@@ -131,13 +147,18 @@ export async function buildPaymentRequirements(
 
   validateDeadline(quoteResponse, cfg);
 
-  // ── 5. Map to x402 PaymentRequirements ────────────────────────────
-  const requirements = mapToPaymentRequirements(quoteResponse, cfg);
+  // ── 5. Apply operator margin ──────────────────────────────────────
+  const margin = applyOperatorMargin(amountIn, cfg.operatorMarginBps);
 
-  // ── 6. Persist SwapState ──────────────────────────────────────────
+  // ── 6. Map to x402 PaymentRequirements ────────────────────────────
+  const requirements = mapToPaymentRequirements(quoteResponse, cfg, inputs, margin);
+
+  // ── 7. Persist SwapState ──────────────────────────────────────────
   const now = Date.now();
   const state: SwapState = {
     depositAddress,
+    swapInputs: inputs,
+    operatorMarginBps: cfg.operatorMarginBps,
     quoteResponse: toQuoteResponseRecord(quoteResponse),
     paymentRequirements: requirements,
     phase: "QUOTED",
@@ -180,36 +201,114 @@ export function buildQuoteDeadline(cfg: GatewayConfig): string {
 }
 
 /**
- * Construct the 1CS QuoteRequest.
+ * Construct the 1CS QuoteRequest for a swap-as-resource flow.
  *
  * Key design decisions:
- * - `swapType: EXACT_OUTPUT` — the merchant specifies what they want to receive
- * - `dry: false` — we need a real deposit address
- * - `refundTo: gatewayRefundAddress` — at quote time the buyer is unknown,
- *   so refunds go to the gateway address which the operator then routes
- *   back to the buyer (whose address is known post-verification)
- * - `depositType: ORIGIN_CHAIN` — the buyer deposits on the EVM origin chain
- * - `recipientType: DESTINATION_CHAIN` — merchant receives on the destination chain
+ * - `swapType: EXACT_INPUT` — buyer signs for an exact `amountIn`; slippage
+ *   upside on the destination amount accrues to the buyer (D2 in plan).
+ * - `dry: false` — we need a real deposit address.
+ * - `refundTo: inputs.refundAddress ?? cfg.gatewayRefundAddress` — buyer's
+ *   per-request refund target wins; gateway address is the fallback (D6).
+ * - `depositType: ORIGIN_CHAIN` — the buyer deposits on the EVM origin chain.
+ * - `recipientType: DESTINATION_CHAIN` — buyer receives on the destination chain
+ *   they specified. (`INTENTS` would park funds inside NEAR Intents, which
+ *   is not a use case for this product.)
  */
-export function buildQuoteRequest(
+export function buildSwapQuoteRequest(
   cfg: GatewayConfig,
+  inputs: SwapRequestInput,
   deadline: string,
 ): Parameters<typeof OneClickService.getQuote>[0] {
   return {
     dry: false,
-    swapType: QuoteRequest.swapType.EXACT_OUTPUT,
+    swapType: QuoteRequest.swapType.EXACT_INPUT,
     slippageTolerance: 50, // 0.5% — reasonable default for stablecoins
     originAsset: cfg.originAssetIn,
     depositType: QuoteRequest.depositType.ORIGIN_CHAIN,
-    destinationAsset: cfg.merchantAssetOut,
-    amount: cfg.merchantAmountOut,
-    refundTo: cfg.gatewayRefundAddress,
+    destinationAsset: inputs.destinationAsset,
+    amount: inputs.amountIn,
+    refundTo: inputs.refundAddress ?? cfg.gatewayRefundAddress,
     refundType: QuoteRequest.refundType.ORIGIN_CHAIN,
-    recipient: cfg.merchantRecipient,
+    recipient: inputs.destinationAddress,
     recipientType: QuoteRequest.recipientType.DESTINATION_CHAIN,
     deadline,
     referral: ONECLICK_REFERRAL,
   };
+}
+
+/**
+ * Apply the operator margin (basis points) to the 1CS-quoted `amountIn`.
+ *
+ * Returns both the new amount the buyer signs for and the margin amount in
+ * isolation, so the receipt and `extra.crossChain.operatorFee` can surface
+ * the breakdown to the buyer transparently.
+ *
+ * Implementation uses BigInt arithmetic to preserve full precision on
+ * stablecoin smallest-unit values (USDC has 6 decimals; uint256 fits).
+ */
+export function applyOperatorMargin(
+  amountIn: string,
+  bps: number,
+): { amountWithMargin: string; marginAmount: string } {
+  if (bps < 0 || bps > 1000 || !Number.isInteger(bps)) {
+    throw new Error(`operatorMarginBps out of range: ${bps}`);
+  }
+  const base = BigInt(amountIn);
+  const margin = (base * BigInt(bps)) / 10000n;
+  return {
+    amountWithMargin: (base + margin).toString(),
+    marginAmount: margin.toString(),
+  };
+}
+
+/**
+ * Hard-fail on buyer-destination format mismatches before sending a quote
+ * request to 1CS. Catches the common "EVM destination chain + NEAR-format
+ * recipient" class of bugs and returns a structured 400 instead of relying
+ * on 1CS to reject (which surfaces as 503 with a less actionable message).
+ *
+ * Reuses the chain-prefix helpers from {@link ../payment/chain-prefixes.js}.
+ * The unknown-prefix case is a warning (the buyer may know about a chain
+ * we don't recognise yet); only true mismatches fail.
+ */
+export function validateBuyerDestination(inputs: SwapRequestInput): void {
+  const { destinationAsset, destinationAddress } = inputs;
+  const prefix = extractChainPrefix(destinationAsset);
+  const isEvmRecipient = /^0x[a-fA-F0-9]{40}$/.test(destinationAddress);
+
+  const reasons: string[] = [];
+
+  if (prefix !== null && EVM_CHAIN_PREFIXES.includes(prefix)) {
+    if (!isEvmRecipient) {
+      reasons.push(
+        `destinationAddress "${destinationAddress}" is not an EVM address (0x + 40 hex) but destinationAsset targets ${prefix}`,
+      );
+    }
+  } else if (prefix !== null && NON_EVM_CHAIN_PREFIXES.includes(prefix)) {
+    if (isEvmRecipient) {
+      reasons.push(
+        `destinationAddress "${destinationAddress}" looks like an EVM address but destinationAsset targets ${prefix}`,
+      );
+    }
+  } else if (isNearNativeAsset(destinationAsset)) {
+    if (isEvmRecipient) {
+      reasons.push(
+        `destinationAddress "${destinationAddress}" looks like an EVM address but destinationAsset is NEAR-native`,
+      );
+    } else if (!isValidNearAccount(destinationAddress)) {
+      reasons.push(
+        `destinationAddress "${destinationAddress}" is not a valid NEAR account ('.near'/'.tg' suffix or 64-char implicit)`,
+      );
+    }
+  }
+  // Unknown prefix → let 1CS validate; we don't reject what we don't understand.
+
+  if (reasons.length > 0) {
+    throw new InvalidInputError(
+      `Buyer destination format mismatch: ${reasons.join("; ")}`,
+      { reasons, destinationAsset, destinationAddress },
+    );
+  }
 }
 
 /**
@@ -323,31 +422,31 @@ export function validateDeadline(quoteResponse: QuoteResponse, cfg: GatewayConfi
  *
  * Field mapping:
  *
- * | x402 field          | Source                    | Derivation                                      |
- * |---------------------|---------------------------|-------------------------------------------------|
- * | scheme              | static                    | "exact" — standard EVM exact scheme              |
- * | network             | cfg.originNetwork         | CAIP-2 chain ID (e.g. "eip155:8453")             |
- * | asset               | cfg.originTokenAddress    | ERC-20 contract address on origin chain          |
- * | amount              | quote.amountIn            | SDK's amountIn = docs' maxAmountIn (upper bound) |
- * | payTo               | quote.depositAddress      | 1CS deposit address (the critical trick)         |
- * | maxTimeoutSeconds   | quote.deadline - now       | seconds until deadline, minus safety buffer      |
- * | extra.name          | cfg.tokenName             | EIP-712 domain name (e.g. "USD Coin")            |
- * | extra.version       | cfg.tokenVersion          | EIP-712 domain version (e.g. "2")                |
- * | extra.assetTransferMethod | cfg.tokenSupportsEip3009 | "eip3009" if supported, else "permit2"    |
- * | extra.crossChain    | quoteResponse + cfg       | {@link CrossChainQuoteExtra} — informational;    |
- * |                     |                           | safely ignorable by non-1CS-aware clients        |
+ * | x402 field          | Source                    | Derivation                                          |
+ * |---------------------|---------------------------|-----------------------------------------------------|
+ * | scheme              | static                    | "exact" — standard EVM exact scheme                 |
+ * | network             | cfg.originNetwork         | CAIP-2 chain ID (e.g. "eip155:8453")                |
+ * | asset               | cfg.originTokenAddress    | ERC-20 contract address on origin chain             |
+ * | amount              | quote.amountIn + margin   | EXACT_INPUT amountIn × (10000 + bps) / 10000        |
+ * | payTo               | quote.depositAddress      | 1CS deposit address (the foundational trick)        |
+ * | maxTimeoutSeconds   | quote.deadline - now      | seconds until deadline, minus safety buffer         |
+ * | extra.name          | cfg.tokenName             | EIP-712 domain name (e.g. "USD Coin")               |
+ * | extra.version       | cfg.tokenVersion          | EIP-712 domain version (e.g. "2")                   |
+ * | extra.assetTransferMethod | cfg.tokenSupportsEip3009 | "eip3009" if supported, else "permit2"        |
+ * | extra.crossChain    | quoteResponse + inputs    | {@link CrossChainQuoteExtra} — informational, with  |
+ * |                     |                           | operatorFee breakdown surfaced for the buyer        |
  */
 export function mapToPaymentRequirements(
   quoteResponse: QuoteResponse,
   cfg: GatewayConfig,
+  inputs: SwapRequestInput,
+  margin: { amountWithMargin: string; marginAmount: string },
 ): PaymentRequirementsRecord {
   const quote = quoteResponse.quote;
   const depositAddress = quote.depositAddress!;
 
-  // Calculate maxTimeoutSeconds from the quote deadline
   const maxTimeoutSeconds = computeMaxTimeoutSeconds(quote.deadline, cfg.quoteExpiryBufferSec);
 
-  // Determine asset transfer method from config
   const assetTransferMethod: AssetTransferMethod = cfg.tokenSupportsEip3009
     ? "eip3009"
     : "permit2";
@@ -356,53 +455,55 @@ export function mapToPaymentRequirements(
     scheme: "exact",
     network: cfg.originNetwork,
     asset: cfg.originTokenAddress,
-    // For EXACT_OUTPUT quotes, the 1CS docs describe the response as having
-    // "two fields minAmountIn and maxAmountIn". However, the SDK type names
-    // the upper bound `amountIn` (not `maxAmountIn`). The lower bound is
-    // `minAmountIn`. We use `amountIn` (the upper bound / maxAmountIn) as
-    // the x402 payment amount so the buyer's signed authorization covers
-    // the worst-case price. If the actual execution price is better, 1CS
-    // refunds the difference to the refundTo address.
-    //
-    // @see https://docs.near-intents.org/api-reference/oneclick/request-a-swap-quote
-    amount: quote.amountIn,
-    // The fundamental trick: payTo is the 1CS deposit address, not the merchant.
+    // EXACT_INPUT semantics: the buyer signed for an exact `amountIn` in
+    // their request; we add the operator margin on top so the buyer's
+    // x402 authorisation covers (1CS amountIn + operator fee). Slippage
+    // upside on the destination amount accrues to the buyer.
+    amount: margin.amountWithMargin,
+    // The fundamental trick: payTo is the 1CS deposit address, not a merchant.
+    // Funds land here, 1CS routes them cross-chain to inputs.destinationAddress.
     payTo: depositAddress,
     maxTimeoutSeconds,
     extra: {
       name: cfg.tokenName,
       version: cfg.tokenVersion,
       assetTransferMethod,
-      crossChain: buildCrossChainExtra(quoteResponse, cfg),
+      crossChain: buildCrossChainExtra(quoteResponse, cfg, inputs, margin),
     },
   };
 }
 
 /**
  * Build the informational `extra.crossChain` block carried on every 402
- * envelope. Keys that the 1CS quote does not populate (e.g. `refundFee`,
- * `depositMemo` — both chain-dependent) are omitted from the output
- * rather than emitted as `undefined`, so serialised JSON stays tight
- * and downstream consumers can rely on key-presence semantics.
+ * envelope. Surfaces the buyer's destination, the 1CS quote breakdown,
+ * the operator margin, and the effective refund target.
  *
- * This helper is a pure field-copy — no I/O, no new failure modes. It
- * mirrors the TypeScript interface {@link CrossChainQuoteExtra} 1:1.
+ * Keys that the 1CS quote does not populate (e.g. `refundFee`,
+ * `depositMemo` — both chain-dependent) are omitted from the output
+ * rather than emitted as `undefined`, so serialised JSON stays tight.
  */
 function buildCrossChainExtra(
   quoteResponse: QuoteResponse,
   cfg: GatewayConfig,
+  inputs: SwapRequestInput,
+  margin: { marginAmount: string },
 ): CrossChainQuoteExtra {
   const quote = quoteResponse.quote;
   const out: CrossChainQuoteExtra = {
     protocol: "1cs",
     quoteId: quoteResponse.correlationId,
-    destinationRecipient: cfg.merchantRecipient,
-    destinationAsset: cfg.merchantAssetOut,
+    destinationRecipient: inputs.destinationAddress,
+    destinationAsset: inputs.destinationAsset,
     amountOut: quote.amountOut,
     amountOutFormatted: quote.amountOutFormatted,
     amountOutUsd: quote.amountOutUsd,
     amountInUsd: quote.amountInUsd,
-    refundTo: cfg.gatewayRefundAddress,
+    refundTo: inputs.refundAddress ?? cfg.gatewayRefundAddress,
+    operatorFee: {
+      bps: cfg.operatorMarginBps,
+      amount: margin.marginAmount,
+      currency: "USDC",
+    },
   };
   if (quote.refundFee !== undefined) out.refundFee = quote.refundFee;
   if (quote.depositMemo !== undefined) out.depositMemo = quote.depositMemo;
@@ -472,14 +573,12 @@ function extractErrorMessage(err: InstanceType<typeof OneClickApiError>): string
 // ═══════════════════════════════════════════════════════════════════════
 // Quote-request diagnostics
 //
-// Shared helper used both at startup (config.validateRecipientFormat) and
-// at runtime (buildQuoteDiagnosticContext above) to produce human-readable
-// hints identifying the most common operator mistakes.
+// Shared helper used by the runtime quote error wrapper to produce
+// human-readable hints identifying the most common operator/buyer mistakes.
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
- * Fields relevant to recipient/asset diagnosis. Kept narrow so both the
- * config validator (which synthesizes one from env vars) and the runtime
+ * Fields relevant to recipient/asset diagnosis. Kept narrow so the runtime
  * quote error wrapper (which passes the outgoing 1CS request) can call it.
  */
 export interface QuoteRequestShape {
@@ -501,21 +600,21 @@ export interface QuoteRequestShape {
  *  - Recipient format that does not match the destination chain:
  *      - EVM destination but recipient is not `0x`+40 hex chars
  *      - NEAR-native destination but recipient is not a valid NEAR account
- *        (missing `.near`/`.tg` TLA, uppercase, length out of bounds, etc.)
  *      - Non-EVM destination (Stellar, Solana, Bitcoin, ...) but recipient
  *        looks like an EVM address
  *  - Unknown chain prefix in `destinationAsset` — we can't validate the
  *    recipient format, so we surface this as a hint.
  *
- * Used by both the startup validator (`config.validateRecipientFormat`)
- * and the runtime error wrapper (`buildQuoteDiagnosticContext`) so the
- * operator sees the same diagnosis regardless of when it fires.
+ * Used by the runtime error wrapper (`buildQuoteDiagnosticContext`) so
+ * operators see the likely cause when 1CS rejects a quote upstream.
+ * The pre-quote validator {@link validateBuyerDestination} hard-fails on
+ * the same chain-mismatch class without going through this string-based
+ * path.
  */
 export function diagnoseQuoteRequest(req: QuoteRequestShape): string[] {
   const hints: string[] = [];
 
   // 1. Whitespace / inline-comment artefacts.
-  //    Typical .env bugs: `KEY= value` (leading space), `KEY=value #comment`.
   for (const field of [
     "originAsset",
     "destinationAsset",
@@ -526,7 +625,7 @@ export function diagnoseQuoteRequest(req: QuoteRequestShape): string[] {
     const value = req[field];
     if (typeof value === "string" && /\s|#/.test(value)) {
       hints.push(
-        `${field} "${value}" contains whitespace or '#' — check your .env for leading spaces or inline comments`,
+        `${field} "${value}" contains whitespace or '#' — check your input for leading spaces or inline comments`,
       );
     }
   }
@@ -550,7 +649,6 @@ export function diagnoseQuoteRequest(req: QuoteRequestShape): string[] {
       );
     }
   } else if (isNearNativeAsset(destinationAsset)) {
-    // NEAR-native: recipient should be a valid NEAR account.
     if (isEvmRecipient) {
       hints.push(
         `recipient "${recipient}" looks like an EVM address but destinationAsset resolves to a NEAR-native token; recipient should be a NEAR account`,
@@ -561,7 +659,6 @@ export function diagnoseQuoteRequest(req: QuoteRequestShape): string[] {
       );
     }
   } else if (destPrefix !== null) {
-    // Has a prefix but it's not in either known list.
     hints.push(
       `destinationAsset has chain prefix "${destPrefix}" which is not in the known chain list — recipient format cannot be validated automatically`,
     );

@@ -12,7 +12,7 @@
  * ```json
  * {
  *   "version": 1,
- *   "resources": ["https://gateway.example.com/api/premium"],
+ *   "resources": ["https://gateway.example.com/api/swap"],
  *   "ownershipProofs": ["0x..."],
  *   "instructions": "Prefer /openapi.json for per-route schemas; probe each URL in `resources` for its runtime 402 PAYMENT-REQUIRED envelope."
  * }

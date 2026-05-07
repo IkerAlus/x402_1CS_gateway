@@ -1,28 +1,23 @@
 /**
  * x402 Middleware — Express middleware wiring quote-engine → verifier → settler.
  *
- * Implements the full x402 HTTP flow as an Express middleware for the
- * swap-as-resource service:
+ * Implements the full x402 HTTP flow as an Express middleware:
  *
- * 1. **No PAYMENT-SIGNATURE header** → parse + Zod-validate buyer's query
- *    string → call Quote Engine → return 402 with `PAYMENT-REQUIRED` header
- *    containing the `PaymentRequired` envelope.
- * 2. **PAYMENT-SIGNATURE present** → decode → look up SwapState by deposit
- *    address (the buyer's `swapInputs` are already persisted there from
- *    the QUOTED phase, so the query string on retry is informational only):
- *    - Not found → return fresh 402 (re-parse + re-validate query)
+ * 1. **No PAYMENT-SIGNATURE header** → call Quote Engine → return 402 with
+ *    `PAYMENT-REQUIRED` header containing the `PaymentRequired` envelope.
+ * 2. **PAYMENT-SIGNATURE present** → decode → look up SwapState:
+ *    - Not found → return fresh 402
  *    - Expired → delete stale state, return fresh 402
- *    - Already SETTLED → attach state to req, return cached 200 + PAYMENT-RESPONSE
- *    - QUOTED → call Verifier → on success → call Settler → attach state →
- *      return 200
+ *    - Already SETTLED → return cached 200 with PAYMENT-RESPONSE
+ *    - QUOTED → call Verifier → on success → call Settler → return 200
  * 3. Errors → appropriate HTTP status + PAYMENT-RESPONSE where applicable.
  *
  * Internal design notes (cross-referenced in body comments):
  * - **D-M1**: Uses `@x402/core/http` for header encoding/decoding
  * - **D-M2**: Custom middleware (not `x402HTTPResourceServer`) — we are the facilitator
- * - **D-M3**: Empty body `{}` for 402 responses (body shape unspecified by x402)
+ * - **D-M3**: Empty body `{}` for 402 responses
  * - **D-M4**: Single `accepts` entry
- * - **D-M5**: Awaits full cross-chain settlement before calling next()
+ * - **D-M5**: Awaits full cross-chain settlement before responding
  * - **D-M6**: Expired quotes → fresh 402
  *
  * @module middleware
@@ -36,13 +31,8 @@ import {
 } from "@x402/core/http";
 import type { PaymentRequired, SettleResponse, Network } from "@x402/core/types";
 import type { GatewayConfig } from "../infra/config.js";
-import type {
-  StateStore,
-  PaymentPayloadRecord,
-  SwapRequestInput,
-  SwapState,
-} from "../types.js";
-import { GatewayError, InvalidInputError } from "../types.js";
+import type { StateStore, PaymentPayloadRecord } from "../types.js";
+import { GatewayError } from "../types.js";
 import { buildPaymentRequirements } from "../payment/quote-engine.js";
 import type { QuoteFn } from "../payment/quote-engine.js";
 import { verifyPayment } from "../payment/verifier.js";
@@ -58,22 +48,6 @@ import type {
   QuoteRateLimiter,
   SettlementLimiter,
 } from "../infra/rate-limiter.js";
-import type { ProtectedRoute } from "./protected-routes.js";
-
-// ═══════════════════════════════════════════════════════════════════════
-// Express request augmentation
-// ═══════════════════════════════════════════════════════════════════════
-
-declare module "express-serve-static-core" {
-  interface Request {
-    /**
-     * SwapState attached by the middleware after the buyer's payment has
-     * been verified, broadcast, and 1CS reports SUCCESS. The route handler
-     * (`buildSwapHandler`) reads this to build the receipt body.
-     */
-    swapState?: SwapState;
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════════════
 // Types
@@ -98,12 +72,6 @@ export interface MiddlewareDeps {
   depositNotifyFn: DepositNotifyFn;
   /** 1CS status poller. */
   statusPollFn: StatusPollFn;
-  /**
-   * The route descriptor this middleware instance is bound to. Carries the
-   * Zod input validator the middleware uses to parse `req.query` before
-   * quoting, plus the JSON Schema mirror used by discovery surfaces.
-   */
-  route: ProtectedRoute;
   /** Injectable 1CS quote function. */
   quoteFn?: QuoteFn;
   /** Settler tuning options. */
@@ -126,18 +94,22 @@ export interface MiddlewareDeps {
 /**
  * Create an Express middleware that implements the x402 payment flow.
  *
- * Attach this middleware to the swap route:
+ * Attach this middleware to any route that requires payment:
  *
  * ```ts
- * const x402 = createX402Middleware({ ...deps, route });
- * app.get(route.path, x402, route.handler);
+ * const app = express();
+ * const x402 = createX402Middleware(deps);
+ *
+ * app.get("/api/premium", x402, (req, res) => {
+ *   res.json({ data: "premium content" });
+ * });
  * ```
  *
- * When a client requests the protected route:
- * - Without payment → parse query → 402 with `PAYMENT-REQUIRED` header
+ * When a client requests a protected route:
+ * - Without payment → 402 with `PAYMENT-REQUIRED` header
  * - With valid payment → settlement → 200 with `PAYMENT-RESPONSE` header + next()
  *
- * @param deps Injected dependencies (config, store, chain reader, broadcaster, route, etc.)
+ * @param deps Injected dependencies (config, store, chain reader, broadcaster, etc.)
  * @returns Express middleware function
  */
 export function createX402Middleware(deps: MiddlewareDeps): RequestHandler {
@@ -168,6 +140,7 @@ async function handleX402Request(
 
   // ── No payment header → return 402 with fresh quote ──────────────
   if (!paymentSignatureHeader) {
+    // Rate-limit quote generation per IP
     if (deps.quoteLimiter) {
       const clientIp = req.ip ?? req.socket.remoteAddress ?? "unknown";
       const rl = deps.quoteLimiter.check(clientIp);
@@ -180,15 +153,13 @@ async function handleX402Request(
         res.json({ error: "RATE_LIMITED", message: "Too many quote requests. Try again later." });
         return;
       }
+      // Set rate-limit headers on successful requests too
       res.setHeader("X-RateLimit-Limit", String(rl.limit));
       res.setHeader("X-RateLimit-Remaining", String(rl.remaining));
       res.setHeader("X-RateLimit-Reset", String(Math.ceil(rl.resetAt / 1000)));
     }
 
-    const inputs = parseAndValidateInputs(req, res, deps);
-    if (!inputs) return; // 400 already sent by parseAndValidateInputs
-
-    await returnPaymentRequired(req, res, deps, inputs);
+    await returnPaymentRequired(req, res, deps);
     return;
   }
 
@@ -210,36 +181,31 @@ async function handleX402Request(
 
   const state = await deps.store.get(depositAddress);
 
-  // State not found → re-parse query, return fresh 402.
+  // State not found → return fresh 402
   if (!state) {
     console.warn(`[x402] State not found for deposit address: ${depositAddress} — returning fresh 402`);
-    const inputs = parseAndValidateInputs(req, res, deps);
-    if (!inputs) return;
-    await returnPaymentRequired(req, res, deps, inputs);
+    await returnPaymentRequired(req, res, deps);
     return;
   }
 
-  // State expired → delete and return fresh 402 (re-parsing the query).
+  // State expired → delete and return fresh 402
   const quoteDeadline = state.quoteResponse.quote.deadline;
   if (quoteDeadline && Date.now() > new Date(quoteDeadline).getTime()) {
     console.warn(`[x402] Quote expired for ${depositAddress} (deadline: ${quoteDeadline}) — returning fresh 402`);
     await deps.store.delete(depositAddress);
-    const inputs = parseAndValidateInputs(req, res, deps);
-    if (!inputs) return;
-    await returnPaymentRequired(req, res, deps, inputs);
+    await returnPaymentRequired(req, res, deps);
     return;
   }
 
-  // Already settled → attach state and return cached success.
+  // Already settled → return cached success
   if (state.phase === "SETTLED" && state.settlementResponse) {
     const settleResponse = toSettleResponse(state.settlementResponse);
     res.setHeader("PAYMENT-RESPONSE", encodePaymentResponseHeader(settleResponse));
-    req.swapState = state;
     next();
     return;
   }
 
-  // Already in progress (BROADCASTING, BROADCAST, POLLING) → reject.
+  // Already in progress (BROADCASTING, BROADCAST, POLLING) → reject
   if (state.phase !== "QUOTED") {
     res.status(409).json({
       error: `Swap already in progress (phase: ${state.phase})`,
@@ -256,14 +222,12 @@ async function handleX402Request(
   );
 
   if (!verifyResult.valid) {
-    // Verification failed → return 402 with error, re-quoting using the
-    // buyer's already-persisted swapInputs (no need to re-parse query).
+    // Verification failed → return 402 with error
     console.warn(`[x402] Verification failed for ${depositAddress}: ${verifyResult.error}`);
     const { requirements } = await buildPaymentRequirements(
       deps.cfg,
       deps.store,
       req.originalUrl,
-      state.swapInputs,
       deps.quoteFn,
     );
 
@@ -304,56 +268,14 @@ async function handleX402Request(
       deps.settlerOptions,
     );
 
-    // Reload the now-SETTLED state and attach it for the route handler.
-    const finalState = await deps.store.get(depositAddress);
-
+    // ── Success → set PAYMENT-RESPONSE header and call next() ──────
     const settleResponse = toSettleResponse(settlementResponse);
     res.setHeader("PAYMENT-RESPONSE", encodePaymentResponseHeader(settleResponse));
-    if (finalState) req.swapState = finalState;
     next();
   } finally {
+    // Always release the slot, whether settlement succeeded or failed
     deps.settlementLimiter?.release();
   }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// Input parsing
-// ═══════════════════════════════════════════════════════════════════════
-
-/**
- * Parse `req.query` against the route's Zod validator. On failure, write a
- * 400 `INVALID_INPUT` response with field-level details and return null.
- * On success, return the typed input.
- *
- * Express parses the query string into a `ParsedQs` (a record of strings or
- * arrays of strings); the validator coerces this into the typed
- * {@link SwapRequestInput}. Unknown keys fail Zod's `additionalProperties:
- * false` shape if present (the schema is closed via `z.object` defaults).
- */
-function parseAndValidateInputs(
-  req: Request,
-  res: Response,
-  deps: MiddlewareDeps,
-): SwapRequestInput | null {
-  const parsed = deps.route.inputValidator.safeParse(req.query);
-  if (!parsed.success) {
-    const details = parsed.error.issues.map((issue) => ({
-      path: issue.path.join("."),
-      message: issue.message,
-    }));
-    // Match the error envelope shape used by `handleError` for
-    // `InvalidInputError` (correlationId for log correlation, even though
-    // we never logged this one — operators get a stable identifier to
-    // quote on support).
-    res.status(400).json({
-      error: "INVALID_INPUT",
-      message: "Request input failed validation.",
-      details,
-      correlationId: generateCorrelationId(),
-    });
-    return null;
-  }
-  return parsed.data as SwapRequestInput;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -361,20 +283,17 @@ function parseAndValidateInputs(
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
- * Build and send a 402 Payment Required response with a fresh 1CS quote
- * for the buyer's destination.
+ * Build and send a 402 Payment Required response with a fresh 1CS quote.
  */
 async function returnPaymentRequired(
   req: Request,
   res: Response,
   deps: MiddlewareDeps,
-  inputs: SwapRequestInput,
 ): Promise<void> {
   const { requirements } = await buildPaymentRequirements(
     deps.cfg,
     deps.store,
     req.originalUrl,
-    inputs,
     deps.quoteFn,
   );
 
@@ -411,10 +330,6 @@ async function returnPaymentRequired(
  * value here.
  */
 const CLIENT_SAFE_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
-  // Buyer input (400)
-  INVALID_INPUT:
-    "Request input is invalid. See `details` for the field-level reasons.",
-
   // Quote / 1CS reachability (503)
   QUOTE_UNAVAILABLE:
     "Unable to obtain a swap quote at this time. Please try again shortly.",
@@ -509,6 +424,9 @@ function logServerError(
     console.error(
       `${prefix} — ${err.name} (code=${err.code}, httpStatus=${err.httpStatus}): ${err.message}`,
     );
+    // Dump structured diagnostic context (request fields + hints) when
+    // present. This is the operator's primary signal for "what actually
+    // went wrong" — e.g. a malformed NEAR recipient vs. a flaky upstream.
     if (err.context && Object.keys(err.context).length > 0) {
       console.error(
         `[x402][error][cid=${correlationId}] context: ${JSON.stringify(err.context, null, 2)}`,
@@ -532,10 +450,6 @@ function logServerError(
  * For settlement failures (502, 504), we include a PAYMENT-RESPONSE header
  * with `success: false` so the client can interpret the failure.
  *
- * `InvalidInputError` (400) carries structured `context.reasons` from the
- * pre-quote validator — surface those in the response so the buyer can
- * see which field is malformed without grepping server logs.
- *
  * All error responses carry a short `correlationId`; the full error (name,
  * message, stack) is logged server-side under that ID so operators can
  * investigate without the client ever seeing internal details.
@@ -544,23 +458,11 @@ function handleError(res: Response, err: unknown): void {
   const correlationId = generateCorrelationId();
   logServerError(correlationId, res.req, err);
 
-  if (err instanceof InvalidInputError) {
-    const reasons = Array.isArray(err.context?.reasons)
-      ? (err.context.reasons as string[])
-      : undefined;
-    res.status(err.httpStatus).json({
-      error: err.code,
-      message: clientMessageFor(err),
-      details: reasons,
-      correlationId,
-    });
-    return;
-  }
-
   if (err instanceof GatewayError) {
     const status = err.httpStatus;
     const clientMsg = clientMessageFor(err);
 
+    // For settlement-related errors, include PAYMENT-RESPONSE header
     if (status === 502 || status === 504) {
       const failResponse: SettleResponse = {
         success: false,
@@ -634,14 +536,15 @@ function toSettleResponse(
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
- * Create a minimal Express app with the x402 middleware mounted on the
- * route from `deps.route`.
+ * Create a minimal Express app with the x402 middleware on all routes.
  *
- * Useful for testing and simple deployments. For production, mount
- * routes individually using `createX402Middleware()`.
+ * Useful for testing and simple deployments. For production, mount the
+ * middleware on specific routes using `createX402Middleware()`.
  *
  * ```ts
- * const app = await createGatewayApp(deps, route.handler);
+ * const app = createGatewayApp(deps, (req, res) => {
+ *   res.json({ message: "Premium content" });
+ * });
  * ```
  */
 export async function createGatewayApp(
@@ -652,9 +555,8 @@ export async function createGatewayApp(
   const app = express.default();
 
   app.use(express.default.json());
-  const x402 = createX402Middleware(deps);
-  const method = deps.route.method.toLowerCase() as "get" | "post";
-  app[method](deps.route.path, x402, handler);
+  app.use(createX402Middleware(deps));
+  app.get("*", handler);
 
   return app;
 }

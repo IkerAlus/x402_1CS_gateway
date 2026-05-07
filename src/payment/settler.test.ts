@@ -150,13 +150,6 @@ function makeVerifiedState(
 ): SwapState {
   return {
     depositAddress: TEST_DEPOSIT_ADDRESS,
-    swapInputs: {
-      destinationChain: "near",
-      destinationAsset: "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
-      destinationAddress: "alice.near",
-      amountIn: "10500000",
-    },
-    operatorMarginBps: 30,
     quoteResponse: makeQuoteResponse(),
     paymentRequirements: makeRequirements(),
     paymentPayload: payloadOverride ?? makeEIP3009Payload(),
@@ -809,7 +802,7 @@ describe("buildSettlementResponse", () => {
     expect(response.extra!.settlementType).toBe("crosschain-1cs");
     expect(response.extra!.swapStatus).toBe("SUCCESS");
     expect(response.extra!.destinationChain).toBe("near");
-    expect(response.extra!.destinationAsset).toBe(state.swapInputs.destinationAsset);
+    expect(response.extra!.destinationAsset).toBe(cfg.merchantAssetOut);
     expect(response.extra!.destinationAmount).toBe("10000000");
     expect(response.extra!.correlationId).toBe("corr-123");
     expect(response.extra!.destinationTxHashes).toEqual([
@@ -943,13 +936,6 @@ describe("recoverSettlement", () => {
   ): SwapState {
     return {
       depositAddress: TEST_DEPOSIT_ADDRESS,
-      swapInputs: {
-        destinationChain: "near",
-        destinationAsset: "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
-        destinationAddress: "alice.near",
-        amountIn: "10500000",
-      },
-      operatorMarginBps: 30,
       quoteResponse: makeQuoteResponse(),
       paymentRequirements: makeRequirements(),
       paymentPayload: makeEIP3009Payload(),
@@ -1103,13 +1089,6 @@ describe("recoverInFlightSettlements", () => {
   ): SwapState {
     return {
       depositAddress,
-      swapInputs: {
-        destinationChain: "near",
-        destinationAsset: "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
-        destinationAddress: "alice.near",
-        amountIn: "10500000",
-      },
-      operatorMarginBps: 30,
       quoteResponse: makeQuoteResponse({ correlationId: `corr-${depositAddress}` }),
       paymentRequirements: makeRequirements({ payTo: depositAddress }),
       paymentPayload: makeEIP3009Payload(),

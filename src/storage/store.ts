@@ -53,12 +53,6 @@ export class SqliteStateStore implements StateStore {
    *
    * Must be called before any other method. This is a separate method
    * (rather than constructor logic) because sql.js initialization is async.
-   *
-   * Performs a stale-DB fail-fast check (see D12 in `implementation_plan.md`):
-   * if a `state.db` from the predecessor merchant-mode codebase is loaded,
-   * its rows lack the `swapInputs` field that the swap service requires.
-   * Boot is refused with a pointer to `OPERATOR_GUIDE.md`'s "First boot"
-   * section.
    */
   async init(): Promise<void> {
     const SQL = await initSqlJs();
@@ -81,7 +75,6 @@ export class SqliteStateStore implements StateStore {
     }
 
     this.createSchema();
-    this.assertSchemaCompatibility();
 
     // Periodic flush to disk if configured
     if (this.options.filePath && this.options.saveIntervalMs) {
@@ -90,45 +83,6 @@ export class SqliteStateStore implements StateStore {
           this.flushToDisk();
         }
       }, this.options.saveIntervalMs);
-    }
-  }
-
-  /**
-   * Stale-DB fail-fast (D12). Sample one existing row's `state_json`; if
-   * the row exists and is parseable but lacks `swapInputs`, the database
-   * was written by the predecessor merchant-mode codebase. Refuse to boot
-   * and point the operator at the guide.
-   *
-   * Empty DBs and fresh-write DBs pass through cleanly. Unparseable rows
-   * fall through (don't mask other corruption as "stale").
-   */
-  private assertSchemaCompatibility(): void {
-    const db = this.getDb();
-    const results = db.exec("SELECT state_json FROM swap_states LIMIT 1");
-    const firstResult = results[0];
-    if (!firstResult || firstResult.values.length === 0) {
-      return; // empty DB — fresh deploy
-    }
-    const json = firstResult.values[0]?.[0];
-    if (typeof json !== "string") return;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(json);
-    } catch {
-      return; // corrupt JSON is a different problem — let it surface elsewhere
-    }
-    if (
-      typeof parsed !== "object" ||
-      parsed === null ||
-      !("swapInputs" in parsed)
-    ) {
-      throw new Error(
-        "Stale state database: existing rows lack `swapInputs`. " +
-          "This file was written by the predecessor merchant-mode codebase. " +
-          `Delete ${this.options.filePath ?? "the SQLite file"} before booting the swap service. ` +
-          "See docs/OPERATOR_GUIDE.md § 'First boot'.",
-      );
     }
   }
 

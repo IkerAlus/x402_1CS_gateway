@@ -12,10 +12,6 @@
  * `fetch` function, and the signing step uses the `signer` module which
  * accepts any ethers.js Wallet.
  *
- * For swap-as-resource routes, pass the buyer's destination params via the
- * optional `query` option — the same query is sent on the initial 402 request
- * AND on the signed retry, so the URL is stable across the round-trip.
- *
  * @module client/x402-client
  *
  * @example
@@ -26,19 +22,10 @@
  * const wallet = new ethers.Wallet("0xPrivateKey");
  * const client = new X402Client({ gatewayUrl: "http://localhost:3402" });
  *
- * const result = await client.payAndFetch(wallet, "/api/swap", {
- *   query: {
- *     destinationChain: "near",
- *     destinationAsset: "nep141:...",
- *     destinationAddress: "alice.near",
- *     amountIn: "10000000",
- *   },
- * });
+ * const result = await client.payAndFetch(wallet, "/api/premium");
  * if (result.success) {
- *   // The body is `{}` — the swap receipt is in the PAYMENT-RESPONSE header:
- *   const receipt = result.paymentResponse?.extensions?.crossChain;
- *   console.log("Settlement tx:", result.paymentResponse?.transaction);
- *   console.log("Destination tx:", receipt?.destinationTxHashes?.[0]?.hash);
+ *   console.log("Resource:", result.body);
+ *   console.log("Settlement tx:", result.paymentResponse.transaction);
  * }
  * ```
  */
@@ -88,17 +75,9 @@ export class X402Client {
    *
    * Returns the 402 payment requirements if payment is needed,
    * or the resource body if the endpoint doesn't require payment.
-   *
-   * @param path    The resource path (e.g. `"/api/swap"`).
-   * @param options Optional `query` — buyer-supplied parameters for swap-as-
-   *                resource routes. Auto URL-encoded. Pass the same values
-   *                to {@link submitPayment} on retry so the URL is stable.
    */
-  async requestResource(
-    path: string,
-    options?: { query?: Record<string, string> },
-  ): Promise<ResourceRequestResult> {
-    const url = this.buildUrl(path, options?.query);
+  async requestResource(path: string): Promise<ResourceRequestResult> {
+    const url = `${this.gatewayUrl}${path}`;
 
     const res = await this._fetch(url);
 
@@ -203,21 +182,15 @@ export class X402Client {
    * retries the original resource request. Blocks until the gateway
    * completes settlement (typically 30-60 seconds for cross-chain swaps).
    *
-   * @param path    The resource path (e.g. `"/api/swap"`).
+   * @param path    The resource path (e.g. "/api/premium").
    * @param payload The signed PaymentPayload from step 3.
-   * @param options Optional `query` — must match what was sent in the initial
-   *                {@link requestResource} call so the URL is stable across
-   *                the round-trip. (The server looks up state by deposit
-   *                address from the signature, but a stable URL keeps logs,
-   *                proxies, and caches happy.)
    * @returns PaymentResult with the resource body and settlement receipt.
    */
   async submitPayment(
     path: string,
     payload: PaymentPayload,
-    options?: { query?: Record<string, string> },
   ): Promise<PaymentResult> {
-    const url = this.buildUrl(path, options?.query);
+    const url = `${this.gatewayUrl}${path}`;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
     const encoded = encodePaymentSignatureHeader(payload as any);
 
@@ -298,20 +271,16 @@ export class X402Client {
    *
    * This is the primary entry point for most use cases.
    *
-   * @param wallet  The buyer's ethers.js Wallet.
-   * @param path    The resource path (e.g. `"/api/swap"`).
-   * @param options Optional `query` — buyer-supplied parameters for swap-as-
-   *                resource routes. Sent on both the initial 402 request and
-   *                the signed retry.
+   * @param wallet The buyer's ethers.js Wallet.
+   * @param path   The resource path (e.g. "/api/premium").
    * @returns The resource body and settlement receipt on success.
    */
   async payAndFetch(
     wallet: ethers.Wallet,
     path: string,
-    options?: { query?: Record<string, string> },
   ): Promise<PayAndFetchResult> {
     // Step 1: Request the resource
-    const resourceResult = await this.requestResource(path, options);
+    const resourceResult = await this.requestResource(path);
 
     // If the resource is free, return it directly
     if (resourceResult.kind === "success") {
@@ -374,9 +343,8 @@ export class X402Client {
       };
     }
 
-    // Step 4: Submit and await settlement (pass the same query so the URL
-    // is stable across the round-trip).
-    const paymentResult = await this.submitPayment(path, payload, options);
+    // Step 4: Submit and await settlement
+    const paymentResult = await this.submitPayment(path, payload);
 
     if (paymentResult.success) {
       return {
@@ -394,18 +362,5 @@ export class X402Client {
       paymentRequired,
       paymentResponse: paymentResult.paymentResponse,
     };
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────
-
-  /**
-   * Build a URL from the gateway base, the resource path, and an optional
-   * query record. Auto URL-encodes via `URLSearchParams`.
-   */
-  private buildUrl(path: string, query?: Record<string, string>): string {
-    const base = `${this.gatewayUrl}${path}`;
-    if (!query || Object.keys(query).length === 0) return base;
-    const qs = new URLSearchParams(query).toString();
-    return `${base}${path.includes("?") ? "&" : "?"}${qs}`;
   }
 }

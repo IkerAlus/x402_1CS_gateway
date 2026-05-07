@@ -1,13 +1,11 @@
 /**
  * Tests for the protected-routes registry.
  *
- * Covers what the validator must enforce (per-route shape, list-level
- * uniqueness, currency=USD, required swap-mode fields), plus the
- * `buildSwapHandler`'s body-is-`{}` D14 contract.
- *
- * The "registry contains a swap route" + "validation passes" assertions
- * implicitly cover the per-route field-presence checks, so we don't
- * re-test each field individually at the registry level.
+ * Covers:
+ *  - Registry contents: at least one route, well-formed, unique paths.
+ *  - Validator: catches malformed paths, methods, pricing, handlers.
+ *  - Factory (`buildProtectedRoutes`): binds runtime handlers and that the
+ *    bound handler produces the shape declared in `outputSchema`.
  */
 
 import { describe, it, expect } from "vitest";
@@ -18,23 +16,57 @@ import {
   buildProtectedRoutes,
   validateProtectedRoute,
   validateProtectedRoutes,
-  buildSwapHandler,
   type ProtectedRoute,
-  type RequestWithSwapState,
 } from "./protected-routes.js";
-import { SwapRequestInputSchema, SwapRequestInputJsonSchema } from "./swap-input.js";
-import { mockGatewayConfig, mockSwapState } from "../mocks/index.js";
+import { mockGatewayConfig } from "../mocks/mock-config.js";
 
 // ═══════════════════════════════════════════════════════════════════════
-// Static registry — the live registry must contain a swap route and pass
-// list-level validation. Per-field checks live in `validateProtectedRoute`.
+// Static registry shape
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("PROTECTED_ROUTES registry", () => {
-  it("contains a GET /api/swap and passes list-level validation", () => {
-    const swap = PROTECTED_ROUTES.find((r) => r.path === "/api/swap");
-    expect(swap?.method).toBe("GET");
+  it("is non-empty", () => {
+    expect(PROTECTED_ROUTES.length).toBeGreaterThan(0);
+  });
+
+  it("has unique (method, path) tuples", () => {
+    const seen = new Set<string>();
+    for (const route of PROTECTED_ROUTES) {
+      const key = `${route.method} ${route.path}`;
+      expect(seen.has(key)).toBe(false);
+      seen.add(key);
+    }
+  });
+
+  it("every entry passes validation", () => {
+    // The `handler` placeholder in the static list throws when called, but
+    // validation only checks that it's a function — that's the point of
+    // separating validation from handler execution.
     expect(() => validateProtectedRoutes(PROTECTED_ROUTES)).not.toThrow();
+  });
+
+  it("declares an input schema for each route (Bazaar invocability)", () => {
+    // x402scan marks routes without an inputSchema as non-invocable.
+    // This test is a hard gate on every new paid endpoint.
+    for (const route of PROTECTED_ROUTES) {
+      expect(route.inputSchema, `route ${route.path} missing inputSchema`).toBeDefined();
+      expect(typeof route.inputSchema).toBe("object");
+    }
+  });
+
+  it("declares an output schema for each route", () => {
+    for (const route of PROTECTED_ROUTES) {
+      expect(route.outputSchema, `route ${route.path} missing outputSchema`).toBeDefined();
+      expect(typeof route.outputSchema).toBe("object");
+    }
+  });
+
+  it("every pricing entry has currency USD", () => {
+    // x402scan parses `currency` strictly; anything other than USD today
+    // would surprise indexing. Tighten or relax per x402scan spec updates.
+    for (const route of PROTECTED_ROUTES) {
+      expect(route.pricing.currency).toBe("USD");
+    }
   });
 });
 
@@ -48,56 +80,95 @@ describe("validateProtectedRoute", () => {
       path: "/api/ok",
       method: "GET",
       summary: "OK",
-      description: "A test route.",
-      pricing: { currency: "USD", min: "0.01", max: "100" },
-      inputValidator: SwapRequestInputSchema,
-      inputSchema: SwapRequestInputJsonSchema,
-      outputSchema: { type: "object", additionalProperties: false },
+      pricing: { mode: "fixed", currency: "USD", amount: "0.01" },
       handler: (_req, _res, next) => next(),
       ...overrides,
     };
   }
 
-  it("accepts a minimally valid swap-mode route", () => {
+  it("accepts a minimally valid route", () => {
     expect(() => validateProtectedRoute(sampleRoute())).not.toThrow();
   });
 
-  it.each<[string, Partial<ProtectedRoute>, RegExp]>([
-    ["path missing leading slash", { path: "api/no-slash" }, /must be a string starting with "\/"/],
-    ["unsupported HTTP method", { method: "DELETE" as "GET" }, /"GET" or "POST"/],
-    ["empty summary", { summary: "" }, /summary must be a non-empty string/],
-    ["empty description", { description: "" }, /description must be a non-empty string/],
-    ["non-function handler", { handler: "x" as unknown as ProtectedRoute["handler"] }, /handler must be a function/],
-    ["empty pricing.min", { pricing: { currency: "USD", min: "", max: "100" } }, /pricing\.min/],
-    ["empty pricing.max", { pricing: { currency: "USD", min: "0.01", max: "" } }, /pricing\.max/],
-    [
-      "non-USD currency",
-      {
-        pricing: {
-          currency: "EUR",
-          min: "0.01",
-          max: "100",
-        } as unknown as ProtectedRoute["pricing"],
-      },
-      /pricing\.currency must be "USD"/,
-    ],
-  ])("rejects %s", (_label, override, errPattern) => {
-    expect(() => validateProtectedRoute(sampleRoute(override))).toThrow(errPattern);
+  it("rejects a path that does not start with /", () => {
+    expect(() => validateProtectedRoute(sampleRoute({ path: "api/no-slash" as string })))
+      .toThrow(/must be a string starting with "\/"/);
   });
 
-  it.each<["inputValidator" | "inputSchema" | "outputSchema", RegExp]>([
-    ["inputValidator", /inputValidator must be a Zod schema/],
-    ["inputSchema", /inputSchema must be a JSON Schema object/],
-    ["outputSchema", /outputSchema must be a JSON Schema object/],
-  ])("rejects routes missing %s", (field, errPattern) => {
-    const bad = { ...sampleRoute() } as Partial<ProtectedRoute>;
-    delete bad[field];
-    expect(() => validateProtectedRoute(bad as ProtectedRoute)).toThrow(errPattern);
+  it("rejects an unsupported HTTP method", () => {
+    expect(() =>
+      validateProtectedRoute(sampleRoute({ method: "DELETE" as "GET" })),
+    ).toThrow(/"GET" or "POST"/);
+  });
+
+  it("rejects an empty summary", () => {
+    expect(() => validateProtectedRoute(sampleRoute({ summary: "" })))
+      .toThrow(/summary must be a non-empty string/);
+  });
+
+  it("rejects a non-function handler", () => {
+    expect(() =>
+      validateProtectedRoute(sampleRoute({ handler: "not a function" as unknown as ProtectedRoute["handler"] })),
+    ).toThrow(/handler must be a function/);
+  });
+
+  it("rejects fixed pricing with an empty amount", () => {
+    expect(() =>
+      validateProtectedRoute(
+        sampleRoute({ pricing: { mode: "fixed", currency: "USD", amount: "" } }),
+      ),
+    ).toThrow(/pricing.amount must be a non-empty string for fixed mode/);
+  });
+
+  it("accepts dynamic pricing with min and max", () => {
+    expect(() =>
+      validateProtectedRoute(
+        sampleRoute({ pricing: { mode: "dynamic", currency: "USD", min: "0.01", max: "1.00" } }),
+      ),
+    ).not.toThrow();
+  });
+
+  it("rejects dynamic pricing missing min", () => {
+    expect(() =>
+      validateProtectedRoute(
+        sampleRoute({
+          pricing: {
+            mode: "dynamic",
+            currency: "USD",
+            max: "1.00",
+          } as unknown as ProtectedRoute["pricing"],
+        }),
+      ),
+    ).toThrow(/pricing.min must be a non-empty string for dynamic mode/);
+  });
+
+  it("rejects dynamic pricing missing max", () => {
+    expect(() =>
+      validateProtectedRoute(
+        sampleRoute({
+          pricing: {
+            mode: "dynamic",
+            currency: "USD",
+            min: "0.01",
+          } as unknown as ProtectedRoute["pricing"],
+        }),
+      ),
+    ).toThrow(/pricing.max must be a non-empty string for dynamic mode/);
+  });
+
+  it("rejects an unknown pricing mode", () => {
+    expect(() =>
+      validateProtectedRoute(
+        sampleRoute({
+          pricing: { mode: "tip-jar", currency: "USD" } as unknown as ProtectedRoute["pricing"],
+        }),
+      ),
+    ).toThrow(/pricing.mode must be "fixed" or "dynamic"/);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// validateProtectedRoutes — list-level invariants
+// validateProtectedRoutes — list-level errors
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("validateProtectedRoutes", () => {
@@ -105,11 +176,7 @@ describe("validateProtectedRoutes", () => {
     path: "/api/ok",
     method: "GET",
     summary: "OK",
-    description: "ok",
-    pricing: { currency: "USD", min: "0.01", max: "100" },
-    inputValidator: SwapRequestInputSchema,
-    inputSchema: SwapRequestInputJsonSchema,
-    outputSchema: { type: "object", additionalProperties: false },
+    pricing: { mode: "fixed", currency: "USD", amount: "0.01" },
     handler: (_req, _res, next) => next(),
   });
 
@@ -117,8 +184,13 @@ describe("validateProtectedRoutes", () => {
     expect(() => validateProtectedRoutes([])).toThrow(/empty/);
   });
 
-  it("rejects duplicate (method, path) tuples but allows same path with different methods", () => {
-    expect(() => validateProtectedRoutes([ok(), { ...ok(), summary: "OK2" }])).toThrow(/Duplicate route/);
+  it("rejects duplicate (method, path) tuples", () => {
+    const a = ok();
+    const b: ProtectedRoute = { ...ok(), summary: "OK2" };
+    expect(() => validateProtectedRoutes([a, b])).toThrow(/Duplicate route/);
+  });
+
+  it("allows same path with different methods", () => {
     expect(() =>
       validateProtectedRoutes([
         { ...ok(), method: "GET" },
@@ -133,46 +205,34 @@ describe("validateProtectedRoutes", () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("buildProtectedRoutes", () => {
-  it("returns the same number of routes as the registry, with bound handlers", () => {
-    const routes = buildProtectedRoutes(mockGatewayConfig());
+  it("returns routes with executable handlers bound to cfg", async () => {
+    const cfg = mockGatewayConfig();
+    const routes = buildProtectedRoutes(cfg);
     expect(routes.length).toBe(PROTECTED_ROUTES.length);
-    const swap = routes.find((r) => r.path === "/api/swap")!;
-    expect(typeof swap.handler).toBe("function");
-  });
-});
 
-// ═══════════════════════════════════════════════════════════════════════
-// buildSwapHandler — body is `{}` (D14); throws on missing swapState (bug guard)
-// ═══════════════════════════════════════════════════════════════════════
+    const premium = routes.find((r) => r.path === "/api/premium");
+    expect(premium).toBeDefined();
 
-describe("buildSwapHandler", () => {
-  it("returns `{}` as the 200 response body when middleware attaches swapState", async () => {
-    const handler = buildSwapHandler(mockGatewayConfig());
+    // Mount the handler as-is (skipping the x402 middleware) and verify it
+    // emits the shape declared in outputSchema, with cfg values echoed.
     const app = express();
-    app.get(
-      "/api/swap",
-      (req, _res, next) => {
-        (req as RequestWithSwapState).swapState = mockSwapState({ phase: "SETTLED", settledAt: Date.now() });
-        next();
-      },
-      handler,
-    );
+    app.get("/api/premium", premium!.handler);
 
-    const res = await request(app).get("/api/swap");
+    const res = await request(app).get("/api/premium");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({});
+    expect(res.body.message).toContain("paid");
+    expect(res.body.merchant).toBe(cfg.merchantRecipient);
+    expect(res.body.amountReceived).toBe(cfg.merchantAmountOut);
+    expect(res.body.destinationAsset).toBe(cfg.merchantAssetOut);
+    expect(typeof res.body.timestamp).toBe("string");
   });
 
-  it("throws when middleware fails to attach swapState (bug guard)", async () => {
-    const handler = buildSwapHandler(mockGatewayConfig());
-    const app = express();
-    app.get("/api/swap", handler);
-    app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-      res.status(500).json({ error: err.message });
-    });
-
-    const res = await request(app).get("/api/swap");
-    expect(res.status).toBe(500);
-    expect(res.body.error).toContain("Swap state not attached");
+  it("validates the bound registry (throws on malformed handler substitution)", () => {
+    // Sanity: buildProtectedRoutes runs validateProtectedRoutes at the end.
+    // Can't easily corrupt PROTECTED_ROUTES from outside, so verify the
+    // coupling indirectly: the factory never returns an invalid list when
+    // given a valid cfg.
+    const cfg = mockGatewayConfig();
+    expect(() => buildProtectedRoutes(cfg)).not.toThrow();
   });
 });

@@ -1,8 +1,8 @@
-# x402-1CS Swap Service — Production Readiness TODO
+# x402-1CS Gateway — Production Readiness TODO
 
-**Date:** 2026-05-07 (post swap-as-resource pivot)
-**Test suite status:** 375 passing | 10 skipped (live-only, JWT-gated) — typecheck clean
-**Target:** prototype deployment for a small set of users / agents
+**Date:** 2026-04-21 (updated for x402scan discovery integration)
+**Based on:** Full codebase audit + 485 passing tests (474 mocked + 11 live) + typecheck clean
+**Target:** Prototype deployment for a small number of users
 
 ---
 
@@ -10,36 +10,74 @@
 
 | Area | Status |
 |------|--------|
-| Core protocol (GET → 402 → sign → settle) | Working (covered by 14 e2e tests + 6 multi-chain integration tests) |
-| Buyer-supplied destination (chain / asset / address / amount / refund) | Working |
-| EXACT_INPUT 1CS quotes with operator margin (bps) | Working |
-| EIP-3009 / Permit2 signing & verification | Working (security-critical paths covered by 34 verifier tests) |
+| Core protocol (402 → sign → settle) | Working (live-verified on Base mainnet) |
+| EIP-3009 / Permit2 signing & verification | Working |
 | 1CS integration (quote, deposit, poll) | Working |
-| Multi-chain destinations (32+ chains via NEP-141 prefixes) | Working |
-| Receipt-as-header (D14 — `PAYMENT-RESPONSE.extensions.crossChain`) | Working |
+| Multi-chain destinations (32+ chains, EVM + non-EVM) | Working |
 | Rate limiting (per-IP + settlement cap + GC) | Working |
 | RPC provider pool with failover | Working |
-| Stale-DB fail-fast at SqliteStateStore.init() (D12) | Working |
-| In-flight settlement recovery on restart | Working |
-| Error response sanitization (no internals leaked; structured 400 INVALID_INPUT) | Working |
-| Buyer-input validation (Zod + chain-format pre-check) | Working |
-| Discovery surfaces (`/openapi.json` + `/.well-known/x402` + ownership proofs) | Working |
+| HTTP server timeouts (broadcast + polling budget) | Working |
+| Manual receipt polling (resilient to ethers `tx.wait()` stalls) | Working |
 | TypeScript compilation | Clean |
-| ESLint | 0 errors, ~55 warnings (intentional `no-console` + unused-vars in tests) |
+| In-flight settlement recovery on restart | Working |
+| Test suite (485 tests) | 100% pass |
+| Error response sanitization (no raw internals leaked to clients) | Working |
+| Address-mistake diagnosis (startup warnings + runtime error context) | Working |
+| x402scan discovery surfaces (`/openapi.json` + `/.well-known/x402` + ownership proofs) | Working (Phases 1-4 of `docs/X402SCAN_PLAN.md`) |
+| ESLint | 0 errors, 61 pre-existing warnings (intentional `no-console` + unused imports in tests) |
 
 ---
 
-## Recently Completed — swap-as-resource pivot (2026-05-07)
+## Recently Completed (since 2026-04-02)
 
-The codebase pivoted from a single-merchant payment gateway to a swap-as-resource service. Every settlement now routes funds to a buyer-supplied destination address rather than a pre-configured merchant. See [implementation_plan.md](../implementation_plan.md) for the full execution log; high-level deltas:
-
-- **Route registry collapsed to a single `GET /api/swap`** — `pricing.mode` discriminator removed (single product = single pricing shape).
-- **Per-request buyer inputs** (`destinationChain`, `destinationAsset`, `destinationAddress`, `amountIn`, optional `refundAddress`) replace the deleted `MERCHANT_*` env vars.
-- **EXACT_INPUT semantics** — buyer signs for an exact `amountIn`; slippage upside lands on the buyer (vs the merchant predecessor's EXACT_OUTPUT).
-- **Operator margin in basis points** — new `OPERATOR_MARGIN_BPS` env var, surfaced transparently in `extra.crossChain.operatorFee` on every 402.
-- **Receipt in PAYMENT-RESPONSE header** (D14) — body is `{}`; the swap receipt (destination tx hashes, slippage, operator fee, formatted amounts) is carried via the standardized x402 `extensions` extensibility hook.
-- **Buyer-input validation** — Zod schema gates every field at the request boundary, returns 400 `INVALID_INPUT` with structured details. `validateBuyerDestination` adds chain-format mismatch detection (e.g. EVM destination + NEAR-format address).
-- **Test suite rewritten** — 561 → 375 tests after a focused dedup pass (removed library re-tests, per-input variation explosions, cross-file duplicates). Coverage of *our* contracts is unchanged.
+- **Chain agnosticism** — `NEP141_CHAIN_PREFIX_MAP` expanded from 8 to 30+ chains (EVM + Stellar/Solana/Bitcoin/etc.); unknown prefixes now return raw prefix string instead of defaulting to `"near"`.
+- **Non-EVM recipient validation** — `validateRecipientFormat()` in `config.ts` now detects non-EVM destinations and warns about format mismatches.
+- **Server timeout fix** — Set `headersTimeout`/`requestTimeout`/`setTimeout` tied to `cfg.maxPollTimeMs + 120s`; fixes mid-settlement socket drops (`SocketError: other side closed`).
+- **Manual receipt polling** — Replaced ethers `tx.wait()` with `waitForReceipt()` polling `getTransactionReceipt` every 2s. Resolves hangs on L2 RPCs where ethers v6 block-subscription stalls.
+- **Broadcast timeout** — Bumped from 30s → 60s default; made configurable via `SettlerOptions.broadcastTimeoutMs`.
+- **Error handlers** — `unhandledRejection` logs; `uncaughtException` uses delayed exit (`setTimeout(..., 5000).unref()`) so in-flight settlements can finish.
+- **Trust proxy + body limit** — `app.set("trust proxy", 1)` + `express.json({ limit: "1mb" })`.
+- **Deposit-notify logging** — Catch block now actually emits `console.warn` with deposit address + tx hash. Notify outcome is threaded into `SwapTimeoutError` so operators can tell whether 1CS acknowledged the deposit.
+- **Phase-transition logging** — `settlePayment()` now logs at each phase change: `▶ Broadcasting`, `✓ Origin tx broadcast` (with tx hash + block), `⏳ Polling 1CS status` (with poll budget), `✅ Settled` (with 1CS status + destination chain).
+- **402-issued logging** — `returnPaymentRequired()` now logs `[x402] 402 issued for <url> → deposit=<addr>, amount=<amount>` for every quote handed out.
+- **Test-client deposit address** — `scripts/test-client.ts` now prints the deposit address in Steps 3 and 4 (success + failure paths) for easier correlation with gateway logs.
+- **`.env.stellar` preset** — New pre-filled env file for Base USDC → Stellar USDC merchant destinations.
+- **CORS + helmet** — Gateway now installs `helmet()` for baseline HTTP hardening and `cors()` with `exposedHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE"]` and `allowedHeaders: ["Content-Type", "PAYMENT-SIGNATURE"]` so browser-based x402 clients can read / send the custom headers. Origin allowlist is configurable via `ALLOWED_ORIGINS` env var; undefined means "reflect any origin". Startup log prints the active policy.
+- **In-flight settlement recovery** — On startup, `recoverInFlightSettlements()` scans the store for swaps stuck in `BROADCASTING`, `BROADCAST`, or `POLLING` phases and resumes them in the background. BROADCASTING swaps without an `originTxHash` are marked FAILED (safe default — no re-broadcast). BROADCAST swaps are re-notified to 1CS then polled. POLLING swaps resume polling directly. Recovery tasks hold `SettlementLimiter` slots; swaps that can't acquire a slot are left in place for the next restart. `listByPhase()` promoted to the `StateStore` interface. 18 new tests (12 recovery + 6 store).
+- **GC no longer deletes in-flight settlements** — `QuoteGarbageCollector.sweep()` previously called `store.listExpired(cutoffMs)` with no phase filter (`src/infra/rate-limiter.ts:285`), so any swap older than `quoteGcGracePeriodMs` (default 5 min) was deleted — including swaps still in `BROADCASTING`/`BROADCAST`/`POLLING`. Since `maxPollTimeMs` is also 5 min by default, a slow 1CS route would collide exactly with the GC window, breaking the buyer's HTTP response mid-settlement (1CS still processed the swap independently — not fund loss, but silently broken UX). Fix: introduced `GC_ELIGIBLE_PHASES` (`QUOTED`, `EXPIRED`, `SETTLED`, `FAILED`) in `types.ts` and extended `StateStore.listExpired(olderThanMs, phases?)` with an optional phase filter. The GC passes `GC_ELIGIBLE_PHASES`, so in-flight states are never touched. 8 new tests (6 store × both implementations + 2 rate-limiter integration).
+- **Error response sanitization + correlation IDs** — The middleware previously forwarded raw `err.message` (for both `GatewayError` and unknown errors) straight into HTTP 500/503/502/504 responses, leaking internals (upstream 1CS error bodies, facilitator wallet balances, RPC URLs with keys, file paths). Fix: `handleError()` in `src/http/middleware.ts` now maps each `GatewayError.code` to a curated client-safe message via `CLIENT_SAFE_MESSAGES`, returns a fixed generic message for any non-`GatewayError`, and attaches an 8-char hex `correlationId` to every error response body (and to the sanitized `PAYMENT-RESPONSE` `errorMessage` for 502/504). The full error detail — name, code, HTTP status, message, stack, method, path, IP — is written server-side via `logServerError()` under the same correlation ID so operators can grep for one specific request. 5 new tests in `src/http/middleware.test.ts` cover: 1CS trace leak stripped, facilitator wei balance stripped, non-`GatewayError` returns generic 500, sanitized `PAYMENT-RESPONSE` header, per-response unique correlation IDs.
+- **Server-side diagnosis of recipient / asset mistakes** — A live payment failure with `MERCHANT_RECIPIENT=merchantx402.nea` (typo: `.nea` instead of `.near`) landed with a generic `1CS quote rejected (400): Internal server error` in the server log, giving the operator no indication that it was an address typo. Fix: `GatewayError` now carries an optional `context: ErrorContext` bag used for server-log enrichment (never client-facing). A new `diagnoseQuoteRequest()` helper in `src/payment/quote-engine.ts` inspects outgoing quote fields for known-bad patterns — invalid NEAR account (missing `.near`/`.tg` TLA), EVM-vs-NEAR/Stellar/Solana recipient mismatch, whitespace or `#` characters (from `.env` leading-space or inline-comment bugs), and unknown chain prefixes. `requestQuote()` attaches `{ originAsset, destinationAsset, recipient, amount, refundTo, upstreamStatus, hints[] }` as `context` on every error it throws (400 / 401 / 5xx / network). The middleware's `logServerError()` emits this context as a pretty-printed JSON second stderr line under the same correlation ID so operators see the likely cause immediately. The same diagnoser runs at startup (`config.validateRecipientFormat()`) and warns when any hint fires against the configured merchant values — catching typos before the first buyer arrives. Chain-prefix constants + helpers (`EVM_CHAIN_PREFIXES`, `NON_EVM_CHAIN_PREFIXES`, `extractChainPrefix`, `isValidNearAccount`, `isNearNativeAsset`) are extracted into a shared `src/payment/chain-prefixes.ts` leaf module. Bonus fix: `requestQuote` now passes through `GatewayError` instances from injected `quoteFn`s rather than re-wrapping as `ServiceUnavailableError`. 23 new tests (7 config, 14 quote-engine diagnose + context-threading, 2 middleware log-context).
+- **x402scan discovery surfaces** — The gateway is now discoverable by [x402scan](https://www.x402scan.com/) and the IETF `_x402` TXT-record ecosystem. Four phases of `docs/X402SCAN_PLAN.md` landed (Phase 5 Bazaar `extensions.bazaar.info` is intentionally deferred — see the re-assessment in the plan doc; current OpenAPI schemas cover the invocability requirement). Additions:
+  - `src/http/protected-routes.ts` — single-source-of-truth registry (`ProtectedRoute` + `FixedPricing`/`DynamicPricing` + `validateProtectedRoutes` + `buildProtectedRoutes(cfg)` factory). All paid routes now come from this registry; `server.ts` mounts them in a loop instead of hardcoding `/api/premium`.
+  - `src/http/ownership-proof.ts` — EIP-191 canonical message `x402 ownership of <normalised URL>`, shape validation, recovery helper, and `validateOwnershipProofs()` used by `config.ts` at startup. The signing key never touches the request path.
+  - `src/http/discovery.ts` — pure builder for `GET /.well-known/x402` (`version`, `resources[]`, `ownershipProofs[]`). Joins the public base URL with each route path (supports subpath deployments, drops default ports, etc).
+  - `src/http/openapi.ts` — pure builder for `GET /openapi.json` (OpenAPI 3.1 with `x-payment-info`, `x-discovery.ownershipProofs`, per-route `security: [{x402: []}]`, `responses.402`, requestBody for POST routes with `inputSchema`, responses.200 schema from `outputSchema`).
+  - `src/infra/config.ts` — two new env vars: `PUBLIC_BASE_URL` (optional, normalised for use in both documents) and `OWNERSHIP_PROOFS` (comma-separated list). Startup validation warns on malformed proofs and logs the recovered signer of each valid one so the operator can verify at a glance.
+  - `scripts/generate-ownership-proof.ts` — stand-alone CLI that signs the canonical message and prints the signature ready to paste into `.env`. Self-verifies by recovering the signer before printing.
+  - `docs/X402SCAN.md` — new operator guide: 5-step registration walkthrough, multi-key setups, subpath deployments, troubleshooting matrix, DNS `_x402` notes.
+  - `docs/X402SCAN_PLAN.md` — integration design notes (7 phases, execution order, verification checklist).
+  - 101 new tests: 21 `protected-routes.test.ts`, 28 `ownership-proof.test.ts`, 14 `discovery.test.ts`, 24 `openapi.test.ts`, 8 config discovery tests, 6 server.test.ts discovery-endpoint tests. All endpoints unauthenticated and served above the paid-routes loop so crawlers never hit a 402.
+- **Test-suite cleanup (Tranche E)** — A focused pass on redundancy, flake risk, and live-suite cost, informed by a parallel read-only audit. Five changes landed:
+  - **CI-flake fix** — `recoverInFlightSettlements` now returns a `RecoveryResult` with an added `tasks: Promise<void>[]` field. Production (`server.ts`) ignores it to preserve fire-and-forget semantics; tests `await Promise.all(result.tasks)` for deterministic completion instead of `setTimeout(r, 200)` sleeps. Replaced two real-timer races in `settler.test.ts`. Settler suite runtime: **610 ms → 244 ms**.
+  - **New `src/payment/chain-prefixes.test.ts` (29 tests)** — direct unit coverage for `extractChainPrefix`, `isValidNearAccount`, `isNearNativeAsset`. These helpers gate recipient-format validation at startup and runtime; previously they had only transitive coverage through `diagnoseQuoteRequest`. Notable cases: the `.nea` typo, implicit-account (64-hex) handling, OMFT vs NEAR-native differentiation, and a disjoint-list invariant between EVM and non-EVM prefix lists.
+  - **Verifier test fixture dedupe** — `testConfig()` in `verifier.test.ts` now delegates to `mockGatewayConfig()` from the shared mocks library; ~27 lines of drift-prone duplication removed. The file's specialised inline `signEIP3009`/`signPermit2`/`mockChainReader` helpers stay — they deliberately expose invalid-signature construction for error-path tests, which the library's "always valid" helpers can't do.
+  - **Live suite trimmed 17 → 11 tests** — removed live tests that duplicated mocked coverage or tested 1CS-side invariants rather than gateway behaviour: quote-pricing-sanity, deposit-address uniqueness, small/large amount variants, state-store persistence, concurrent quotes. Live CI time: **71 s → 48 s (-32%)**. Retained: authentication, dry-quote shape, real quote with deposit address, invalid-asset / expired-deadline rejection, full 402→sign→settle flow, `X402Client.payAndFetch`, 1CS 401/400 error mapping, status endpoint.
+  - **Explicit non-goal** — settler-internal helpers (`withTimeout` timeout branch, `waitForReceipt` max-attempts branch) remained untested. Reaching them would require either exporting file-private helpers or ~50 lines of mock-provider scaffolding for ~3 lines of guard logic; net test theatre.
+  - Totals after E: **478 tests** (467 mocked + 11 live) across **19 mocked test files** + live-1cs.test.ts. Total CI time **~51 s**, down from ~73 s.
+- **Codebase health — Tranches A + B + C** — Three follow-on tranches after Tranche E addressed correctness bugs, dead code, and doc drift surfaced by a parallel read-only audit. No public API or runtime behaviour changed; all exports, endpoints, and the 11-test live suite still pass identically.
+  - **A1**: `src/index.ts` was a published-library barrel with an auto-executed `main()` call that crashed external importers when env vars were missing. Removed `main()` and its `loadConfigFromEnv` import; every named export preserved 1:1. The file is now a pure re-export surface.
+  - **A2**: Removed the `"start": "node dist/index.ts"` npm script (impossible to execute — node can't run `.ts`, and the compiled output lives at `dist/index.js`). Never worked, so no behaviour lost.
+  - **A3**: Deleted the stale `dist/` directory (March-31 artefacts with only 4 of the current 23 source files). Added a `"clean": "rm -rf dist"` npm script for future rebuilds. `dist/` remains gitignored.
+  - **B1b**: Deduped `extractSignatureFromAuth` — the byte-identical copy in `settler.ts` now imports from `verifier.ts` (which exports it as an internal helper, not exposed via `src/index.ts`). Settler's consumer code accepts the stricter `\`0x${string}\`` return type verbatim.
+  - **B1c**: Chain-prefix lists now derive from a single source. Added `NEP141_CHAIN_MAP` in `src/payment/chain-prefixes.ts` (30 chain-prefix → CAIP-2 entries). `EVM_CHAIN_PREFIXES` and `NON_EVM_CHAIN_PREFIXES` are computed from the map by partitioning on the `eip155:` value prefix; `settler.ts` imports `NEP141_CHAIN_MAP` and dropped its 34-line duplicate. Three sources of truth → one.
+  - **B1a (skipped with rationale)**: `extractChainId` is duplicated between `verifier.ts` and `client/signer.ts`. Deduping would either require the buyer-side client to reach across into server-side `src/payment/chain-prefixes.ts` or create a new shared leaf for a 4-line helper. Neither wins; the two copies are byte-identical today and drift risk is modest.
+  - **B2**: Deleted four confirmed-dead items — the `export { sleep as _sleep }` re-export in `settler.ts` (zero consumers), the `SettlementResult` type in `types.ts` and its orphan test (the settler returns `SettlementResponseRecord` directly; nothing in production ever consumed `SettlementResult`), and the `_confirmations` parameter on `createBroadcastFn` (no caller passed a 2nd arg). Kept `_resourceUrl` on `buildPaymentRequirements` — removing it would ripple through 5+ call-sites in the public API.
+  - **B3**: Deleted five unused mock helpers from `src/mocks/` — `failingChainReader`, `zeroBalanceChainReader`, `zeroAllowanceChainReader` (`mock-chain-reader.ts`) and `mockTerminalStatus` (`mock-1cs-responses.ts`). No test imported any of them; each was a one-line wrapper around `mockChainReader({...})` that tests can spell inline.
+  - **C2**: `DEPLOYMENT_GUIDE.md` has since been deleted (2026-04-24) — it had drifted into an ~85% duplicate of the README. The one unique section (per-test cost estimate) folded into README § 6; all other content already lived in the README. CLAUDE.local.md's file map stayed — it's a qualitatively richer 3-column table (purpose + key exports per file) designed for AI-agent onboarding.
+  - **C3**: Added a "**Status: Shipped — 2026-04-21**" banner at the top of `docs/X402SCAN_PLAN.md` noting that Phases 1-4 + 6-7 are complete and Phase 5 is deliberately deferred.
+  - **C4**: Stripped stale references in source comments to non-existent docs — `@see Research plan §N`, `@see Implementation roadmap Step N.N`, `settler-implementation-plan.docx`, "Phase 0", "(Phase 1)" markers, and a handful of `— Phase N` decorations in `X402SCAN_PLAN.md` cross-references that had outlived their usefulness now that the work shipped. Body-comment `D-S1` / `D-M1` etc. labels stay — they still tag real design decisions.
+  - `SettlementResult`'s deleted test took the total to **477** (466 mocked + 11 live). No other test counts moved.
+- **Informational `extra.crossChain` block on every 402 envelope** — The 1CS quote response carries useful buyer-facing metadata (quote correlation ID, expected destination amount, USD values on both sides, refund destination, and chain-dependent deposit memo) that the gateway previously dropped after building the 402. The new `CrossChainQuoteExtra` type (in `src/types.ts`) is now populated at `accepts[0].extra.crossChain` on every 402 envelope, sitting **alongside** — never replacing — the EVM `exact` scheme's signing keys (`extra.name` / `extra.version` / `extra.assetTransferMethod`). The v2 `@x402/core` schema explicitly permits arbitrary keys on `extra` (`z.record(z.string(), z.unknown())`), so clients that speak only the `exact` scheme ignore the block and continue to work identically; 1CS-aware clients opt in by checking `extra.crossChain?.protocol === "1cs"`. Deliberately excluded fields: `minAmountIn` (internal threshold), `deadline` (already in `maxTimeoutSeconds`), `timeEstimate` (heuristic), `quoteRequest` (echoes gateway config), and 1CS routing internals. OpenAPI surfaces: new `x-crosschain` top-level extension + `components.schemas.CrossChainQuoteExtra` JSON Schema + 402 response description update — indexers can discover the shape without parsing a live 402. 8 new tests (5 quote-engine + 3 openapi); the two exact-match assertions on `extra` were widened from `toEqual` to `toMatchObject` to tolerate the new sibling key (invariant unchanged). Totals: **485 tests** (474 mocked + 11 live). Client-side consumption code is unchanged (strictly out of scope for this feature; buyer-side integration notes live in `docs/USER_GUIDE.md`).
 
 ---
 
@@ -49,204 +87,173 @@ The codebase pivoted from a single-merchant payment gateway to a swap-as-resourc
 
 **Risk:** Payment signatures (`PAYMENT-SIGNATURE` header) travel in plaintext over HTTP. Any network observer can intercept and replay them.
 
-**Fix:** Terminate TLS via a reverse proxy (nginx, Caddy, Cloudflare Tunnel — recommended) or `https` self-host with a cert.
+**Fix:** Terminate TLS via one of:
+- Reverse proxy (nginx, Caddy, Cloudflare Tunnel) — recommended
+- Node.js `https` module with a cert
 
-**Files:** Infrastructure-level, or `src/server.ts` if self-hosted TLS.
+**Files:** Infrastructure-level (nginx/Caddy), or `src/server.ts` if self-hosted TLS.
 
 ---
 
 ### 2. Enable file-based state persistence
 
-**Risk:** The default `SqliteStateStore` runs in-memory ([src/server.ts:56](../src/server.ts)). A crash or deploy wipes all swap states. Any settlement in `BROADCASTING` or `POLLING` phase is irrecoverable — the buyer's on-chain transfer happened but the gateway forgot about it.
+**Risk:** The default `SqliteStateStore` runs in-memory (see `src/server.ts:48`). A crash or deploy wipes all swap states. Any settlement in `BROADCASTING` or `POLLING` phase is irrecoverable — the buyer's on-chain transfer happened but the gateway forgot about it.
 
 **Fix:**
-- Add `STORE_FILE_PATH` and `STORE_SAVE_INTERVAL_MS` env vars to [src/infra/config.ts](../src/infra/config.ts)
-- Pass them to `SqliteStateStore` constructor in [src/server.ts](../src/server.ts)
-- Document in `.env.example` and the operator guide
-- D12 fail-fast already triggers if a file from the merchant predecessor is loaded — no risk there
+- Add `STORE_FILE_PATH` and `STORE_SAVE_INTERVAL_MS` env vars to `config.ts`
+- Pass them to `SqliteStateStore` constructor in `server.ts`
+- Document in `.env.example` and deployment guide
+
+**Files:** `src/infra/config.ts`, `src/server.ts`, `.env.example`.
 
 ---
 
 ### 3. Graceful shutdown — wait for in-flight settlements
 
-**Risk:** Current shutdown ([src/server.ts:284](../src/server.ts)) calls `server.close()` then `process.exit(0)` after a 1-second grace period. If a settlement is in `POLLING` (can take up to 5 min), the Node.js process exits mid-way, corrupting state. Buyer paid but funds may not reach destination.
+**Risk:** Current shutdown (`src/server.ts:172-196`) calls `server.close()` then `process.exit(0)` after a 1-second grace period. If a settlement is in `POLLING` (can take up to 5 min), the Node.js process exits mid-way, corrupting state. Buyer paid but merchant never received.
 
-**Fix:** Track in-flight settlement count via `SettlementLimiter`. On SIGTERM:
+**Current code:**
+```typescript
+server.close();
+// ...cleanup...
+setTimeout(() => process.exit(0), 1000).unref();
+```
+
+**Fix:** Track in-flight settlement count (via `SettlementLimiter.active()` or dedicated counter). On SIGTERM:
 1. Stop accepting new requests (`server.close()` — already done)
 2. Poll the in-flight count; wait up to 30s for it to reach zero
-3. Run cleanup + exit
+3. Then run cleanup + exit
 
-**Files:** [src/server.ts](../src/server.ts), possibly [src/infra/rate-limiter.ts](../src/infra/rate-limiter.ts) (expose active count).
-
----
-
-### 4. Regulatory / KYC posture (deployment-time)
-
-A public swap-as-resource endpoint where buyers route arbitrary amounts to arbitrary destinations is, in many jurisdictions, money services / money transmission activity. **Before any public deployment**, the operator must:
-
-- Get a legal opinion from a crypto-competent lawyer in their primary jurisdiction (US: state-by-state MSB, EU: MiCA, UK: FCA, SG: MAS).
-- Decide whether the service is geofenced, KYC'd at signup, or fully open.
-- Decide whether ToS / disclaimers belong at the 402 challenge level (`extra.crossChain.terms` extension).
-
-This is **not a code item** — it's an operator concern. See [docs/OPERATOR_GUIDE.md](OPERATOR_GUIDE.md) § "Regulatory considerations" for the full discussion.
+**File:** `src/server.ts:172-196`, possibly `src/infra/rate-limiter.ts` (expose active count).
 
 ---
 
 ## STRONGLY RECOMMENDED — Important for a stable prototype
 
-### 5. Validate RPC reachability at startup
+### 4. Validate RPC reachability at startup
 
-**Current:** If all RPC URLs are unreachable, the server starts fine but every settlement fails at broadcast time. There's a facilitator balance check at startup, but it's non-blocking.
+**Current:** If all RPC URLs are unreachable, the server starts fine but every settlement fails at broadcast time. There's a facilitator balance check (`src/server.ts:62-79`) but it's non-blocking — only logs a warning.
 
-**Fix:** On startup, call `eth_blockNumber` on the primary RPC. If all configured RPCs fail, refuse to start.
+**Fix:** On startup, call `eth_blockNumber` on the primary RPC. If all configured RPCs fail, refuse to start (fail-fast).
 
-**File:** [src/server.ts](../src/server.ts).
-
----
-
-### 6. Check 1CS JWT expiry at startup
-
-**Current:** If the JWT expires, every quote request fails with 401 (which surfaces as 503 `AUTHENTICATION_ERROR` to the buyer) and there's no warning.
-
-**Fix:** Decode the JWT payload, log expiry at startup, warn if < 7 days remaining, fail fast if already expired.
-
-**File:** [src/server.ts](../src/server.ts).
+**File:** `src/server.ts` (startup checks using `providerPool`).
 
 ---
 
-### 7. Add structured logging
+### 5. Check 1CS JWT expiry at startup
 
-**Current:** Bare `console.log`/`console.warn` — no timestamps on the happy-path lines, no correlation IDs on success logs (errors do carry them). The `no-console` ESLint warnings flag the intentional uses.
+**Current:** If the JWT expires, every quote request fails with 401 and there's no warning.
 
-**Fix:** Adopt `pino` for JSON output with per-request correlation IDs. The error path already generates correlation IDs ([src/http/middleware.ts](../src/http/middleware.ts) `generateCorrelationId`); thread them through the success path too.
+**Fix:** Decode the JWT payload (base64 decode), extract `exp`:
+- Log the expiry date at startup
+- Warn if < 7 days remaining
+- Fail fast if already expired
 
-**Files:** [src/payment/settler.ts](../src/payment/settler.ts), [src/http/middleware.ts](../src/http/middleware.ts), [src/payment/quote-engine.ts](../src/payment/quote-engine.ts), [src/server.ts](../src/server.ts).
-
----
-
-### 8. Buyer abuse mitigation — `MAX_AMOUNT_IN` cap
-
-**Risk:** A public GET endpoint that quotes 1CS for any destination/asset/amount is a quote-DoS surface. Mitigations in place: per-IP `quoteLimiter` (rate-limits 402 generation), `settlementLimiter` (caps concurrent settlements). What's missing: an upper bound on per-request amount.
-
-**Fix:** Add `MAX_AMOUNT_IN` env var; reject `amountIn` above the cap with 400 `INVALID_INPUT` before contacting 1CS. Bound the operator's quote-economics exposure per request.
-
-**Files:** [src/infra/config.ts](../src/infra/config.ts), [src/http/swap-input.ts](../src/http/swap-input.ts) (cross-field check after Zod parse).
+**File:** `src/server.ts` (startup checks).
 
 ---
 
-### 9. Make slippage tolerance configurable
+### 6. Add structured logging
 
-**Current:** `slippageTolerance: 50` (0.5%) is hardcoded in [src/payment/quote-engine.ts](../src/payment/quote-engine.ts) `buildSwapQuoteRequest`. For swap-as-resource, the buyer is more sensitive to slippage than a merchant; some operators may want tighter (10 bps) or looser (200 bps) defaults.
+**Current:** All logging is bare `console.log`/`console.warn` — no timestamps, no correlation IDs, no JSON format. The `no-console` ESLint warnings flag 22 occurrences in `server.ts` alone.
 
-**Fix:** Add `SLIPPAGE_TOLERANCE_BPS` env var with a sensible default (50). Surface the active value in `extra.crossChain` so the buyer can see it.
+**Impact:** Debugging a failed settlement requires grepping by deposit address.
 
-**Files:** [src/infra/config.ts](../src/infra/config.ts), [src/payment/quote-engine.ts](../src/payment/quote-engine.ts).
+**Fix:**
+- Minimum: add `[timestamp] [depositAddress] [phase]` prefix to every state transition log.
+- Better: adopt `pino` for JSON output with per-request correlation IDs.
+
+**Files:** `src/payment/settler.ts`, `src/http/middleware.ts`, `src/payment/quote-engine.ts`, `src/server.ts`.
 
 ---
 
-### 10. Gateway authentication
+### 7. Add gateway authentication
 
 **Current:** Anyone who discovers the gateway URL can trigger 402 flows, consuming 1CS quotes (rate-limited by your JWT).
 
-**Fix:** Add an `X-API-Key` middleware (simplest), mTLS, or an IP allowlist. The 402-discovery story still works against authenticated buyers — just adds a second factor for the gateway's economic exposure.
+**Fix:** Add an API key middleware or IP allowlist. Options:
+- `X-API-Key` header checked against an env var (simplest)
+- Mutual TLS (mTLS)
+- IP allowlist
 
-**File:** [src/server.ts](../src/server.ts) (new middleware before paid routes).
+**File:** `src/server.ts` (new middleware before routes).
+
+---
+
+### 8. Test coverage for recent additions
+
+**Current gaps:**
+- `waitForReceipt()` in `src/payment/settler.ts` is not exported and has no direct tests. Needs: timeout after `maxAttempts`, reverted receipt (`status === 0`), provider error during polling.
+- `validateRecipientFormat()` in `src/infra/config.ts` has zero direct tests (~15 scenarios missing: EVM/non-EVM/NEAR recipient pairings, unknown chain prefix, etc.).
+- `SettlerOptions.broadcastTimeoutMs` is not covered by `settler.test.ts`.
+- `ChainReader` RPC timeout during `verifyPayment` — no test simulates RPC failure.
+
+**Files:** `src/payment/settler.test.ts`, `src/infra/config.test.ts`, `src/payment/verifier.test.ts`.
 
 ---
 
 ## NICE-TO-HAVE — Production hardening
 
-### 11. Automatic buyer refunds on 1CS failure
+### 9. Prometheus `/metrics` endpoint
 
-**Current:** When 1CS reports `FAILED` after the on-chain `transferWithAuthorization` succeeded, the buyer's USDC is at the 1CS deposit address. The 1CS API can refund automatically when `refundTo` is set (which the gateway does — buyer's `refundAddress` when supplied, else `gatewayRefundAddress`). For deeper failure modes (e.g. funds end up at the gateway address), the operator forwards manually.
+Expose settlement-latency histograms, error-rate counters, 1CS quote success rates, and active-settlement gauges for monitoring dashboards.
 
-**Fix:** Build a watchdog that monitors `gatewayRefundAddress` for unexpected balances and auto-routes to the recoverable buyer (using their `refundAddress` from `state.swapInputs` when set; falling back to a manual queue otherwise).
-
----
-
-### 12. Multi-origin support
-
-**Current:** Single `ORIGIN_*` env-var set per deploy. Buyer pays in the configured token only.
-
-**Fix:** Allow buyer to specify the origin chain/asset per-request, rotate provider pools by chain. Adds 3–5 days. Separate plan.
-
----
-
-### 13. KYC / sanctions / geofencing hooks
-
-**Current:** Documented as deployment-time concerns in [OPERATOR_GUIDE.md](OPERATOR_GUIDE.md). No in-tree code.
-
-**Fix (when needed):** Add a request-time hook (e.g. `cfg.requestPolicyFn(req): Promise<{allow: boolean; reason?: string}>`) that the middleware calls before quoting. Operators inject their policy (Chainalysis, OFAC list, IP geolocation) without forking the gateway.
-
----
-
-### 14. Prometheus `/metrics` endpoint
-
-Settlement-latency histograms, error-rate counters, 1CS quote success rates, active-settlement gauges, operator-fee revenue. Ungated by default — add IP allowlist if exposed.
-
----
-
-### 15. Circuit breaker for RPC failures
+### 10. Circuit breaker for RPC failures
 
 Currently retries the RPC rotation blindly. A circuit breaker (e.g., `cockatiel`, `opossum`) would back off after N consecutive failures instead of hammering a dead RPC.
 
----
+### 11. Automatic buyer refund on 1CS failure
 
-### 16. Replace `sql.js` with `better-sqlite3`
+When 1CS reports `FAILED` after the on-chain `transferWithAuthorization` succeeded, the buyer's USDC is at the 1CS deposit address. Currently, refunds go to `GATEWAY_REFUND_ADDRESS` and the operator must manually return funds. Automate this path.
+
+### 12. Request correlation IDs
+
+Generate a unique ID per request (`X-Request-Id` header), propagate through all logs and state transitions. Essential for distributed tracing.
+
+### 13. Replace `sql.js` with `better-sqlite3`
 
 `sql.js` is pure-JS SQLite (slower, larger memory footprint). `better-sqlite3` is a native binding — synchronous, faster, battle-tested for Node.js server workloads.
 
----
-
-### 17. Key rotation without restart
+### 14. Key rotation without restart
 
 Currently, changing the facilitator private key requires a full service restart. Add a SIGHUP handler or admin endpoint that reloads the key from the secrets manager.
 
----
+### 15. Health endpoint authentication
 
-### 18. Health endpoint authentication
+`/health` currently exposes in-flight settlement count, rate-limiter state, and provider health to anyone. Consider requiring an API key or restricting access by IP.
 
-`/health` exposes in-flight settlement count, rate-limiter state, and provider health to anyone. Consider requiring an API key or restricting access by IP.
+### 16. Lint cleanup
 
----
-
-### 19. Lint cleanup
-
-~55 ESLint warnings, all pre-existing (intentional `no-console` in `server.ts` + unused-vars in tests). Fix the unused-vars warnings in a single pass; leave `no-console` until structured logging (#7) lands.
+46 ESLint warnings — mostly intentional `no-console` in `server.ts` (22) and unused test imports (14). Fix the unused-import warnings in a single cleanup pass (they're easy wins). Leave the `no-console` warnings — they're intentional until structured logging (#6) lands.
 
 ---
 
 ## Priority Roadmap
 
 ```
-Phase 1 — Go-live minimum (blockers 1-4)
-  ├── #1  TLS termination               (~30 min, infra)
-  ├── #2  File-based persistence        (~30 min)
-  ├── #3  Graceful shutdown (wait)      (~1-2 hrs)
-  └── #4  Regulatory / KYC posture      (legal review, days–weeks)
+Phase 1 — Go-live minimum (blockers 1-3)
+  ├── #1  TLS termination           (~30 min, infra)
+  ├── #2  File-based persistence    (~30 min)
+  └── #3  Graceful shutdown (wait)  (~1-2 hrs)
 
-Phase 2 — Stable prototype (items 5-10)
-  ├── #5  RPC startup validation        (~20 min)
-  ├── #6  JWT expiry check              (~20 min)
-  ├── #8  MAX_AMOUNT_IN cap             (~30 min)
-  ├── #9  Configurable slippage         (~30 min)
-  ├── #10 Gateway authentication        (~1 hr)
-  └── #7  Structured logging            (~2 hrs)
+Phase 2 — Stable prototype (items 4-8)
+  ├── #4  RPC startup validation    (~20 min)
+  ├── #5  JWT expiry check          (~20 min)
+  ├── #7  Gateway authentication    (~1 hr)
+  ├── #8  Test coverage for new code (~2 hrs)
+  └── #6  Structured logging        (~2 hrs)
 
-Phase 3 — Production hardening (items 11-19)
-  └── As needed based on scale, jurisdiction, and operational experience
+Phase 3 — Production hardening (items 9-16)
+  └── As needed based on scale and operational experience
 ```
 
 ---
 
 ## Reference
 
-| Document | Purpose |
-|----------|---------|
-| [README.md](../README.md) | Project overview, setup, quickstart |
-| [docs/USER_GUIDE.md](USER_GUIDE.md) | Buyer-facing usage guide |
-| [docs/OPERATOR_GUIDE.md](OPERATOR_GUIDE.md) | Operator-facing regulatory + ops guide |
-| [docs/Facilitator_keys_guidance.md](Facilitator_keys_guidance.md) | Facilitator wallet key management |
-| [docs/X402SCAN_PLAN.md](X402SCAN_PLAN.md) | x402scan integration design notes (historical, predates swap-mode pivot) |
-| [implementation_plan.md](../implementation_plan.md) | Swap-mode pivot execution log (Phases 1–13) |
-| [SWAP_AS_RESOURCE.md](../SWAP_AS_RESOURCE.md) | Original product brief (preserved as historical context) |
+| Document | Path |
+|----------|------|
+| Setup & testing walkthrough | `README.md` (§§ 1–6) |
+| User Guide | `docs/USER_GUIDE.md` |
+| Test Results | `docs/TEST_RESULTS.md` |
+| Facilitator Key Guidance | `docs/Facilitator_keys_guidance.md` |

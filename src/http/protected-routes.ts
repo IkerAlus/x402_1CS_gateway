@@ -2,21 +2,13 @@
  * Protected Routes Registry — the single source of truth for every paid
  * endpoint served by the gateway.
  *
- * This service is a swap-as-resource gateway with one paid route:
- * `GET /api/swap`. The buyer supplies the destination via query
- * parameters; the route returns a 402 with a 1CS deposit address; after
- * the buyer signs and the swap settles, the route returns a swap
- * receipt as the 200 response body.
- *
  * Every protected HTTP route lives here as a {@link ProtectedRoute} entry
  * with:
  *  - HTTP method + path
  *  - Human-readable summary + description (OpenAPI operation fields)
- *  - Pricing metadata (operator margin band, currency)
- *  - JSON Schema for request input (used by OpenAPI + x402scan; required
- *    for invocability classification)
- *  - JSON Schema for the success response body
- *  - Zod validator for runtime input parsing (used by middleware)
+ *  - Pricing metadata (fixed or dynamic, currency, bounds)
+ *  - Optional JSON Schemas for request input + success response (required
+ *    for x402scan's `extensions.bazaar.info` and for the OpenAPI doc)
  *  - The Express handler invoked **after** a successful x402 settlement
  *
  * Three call-sites consume this registry:
@@ -25,20 +17,16 @@
  *     and the entry's handler.
  *  2. `src/http/openapi.ts` — renders each entry as a path item in the
  *     OpenAPI 3.x document served at `/openapi.json`.
- *  3. `src/http/discovery.ts` — emits each `path` as an absolute URL in
- *     the `/.well-known/x402` fan-out document.
+ *  3. `src/http/discovery.ts` — emits each `path` as an absolute URL in the
+ *     `/.well-known/x402` fan-out document.
+ *
+ * Adding a new paid endpoint is one `PROTECTED_ROUTES` entry — the three
+ * discovery surfaces pick it up automatically.
  *
  * @module protected-routes
  */
 
-import type { Request, RequestHandler } from "express";
-import type { z } from "zod";
-import type { GatewayConfig } from "../infra/config.js";
-import type { SwapState } from "../types.js";
-import {
-  SwapRequestInputSchema,
-  SwapRequestInputJsonSchema,
-} from "./swap-input.js";
+import type { RequestHandler } from "express";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Types
@@ -48,32 +36,41 @@ import {
 export type ProtectedMethod = "GET" | "POST";
 
 /**
- * Pricing metadata for a swap-as-resource route.
- *
- * Actual price is computed per-request from the buyer's `amountIn` plus
- * `cfg.operatorMarginBps`. The `min`/`max` band is informational —
- * surfaces in `/openapi.json` (`x-payment-info`) and on x402scan so
- * indexers can categorise the route's price range.
+ * Fixed-price operation — every successful settlement transfers the same
+ * merchant amount. `amount` is the price in the quote's currency (not the
+ * buyer's origin-chain token amount — that's computed per-request by the
+ * 1Click quote engine).
  */
-export interface SwapPricing {
+export interface FixedPricing {
+  mode: "fixed";
   currency: "USD";
-  /** Inclusive lower bound, e.g. `"0.01"`. */
+  /** Price string, e.g. "0.05". Follows x402scan `x-payment-info` spec. */
+  amount: string;
+}
+
+/**
+ * Dynamic-price operation — the actual price is computed per-request and
+ * falls within a declared band. Reserved for future use; the 1CS flow is
+ * currently EXACT_OUTPUT at a fixed merchant amount.
+ */
+export interface DynamicPricing {
+  mode: "dynamic";
+  currency: "USD";
+  /** Inclusive lower bound, e.g. "0.01". */
   min: string;
-  /** Inclusive upper bound, e.g. `"100000"`. */
+  /** Inclusive upper bound, e.g. "1.00". */
   max: string;
 }
 
 /** Pricing metadata surfaced in `x-payment-info` and `extensions.bazaar`. */
-export type RoutePricing = SwapPricing;
+export type RoutePricing = FixedPricing | DynamicPricing;
 
 /**
  * A paid HTTP route the gateway serves.
  *
- * All fields are required. `inputValidator`, `inputSchema`, and
- * `outputSchema` are load-bearing for swap routes: the validator gates
- * the buyer's request before quoting, the input schema advertises the
- * route's contract to OpenAPI / x402scan, and the output schema describes
- * the receipt body.
+ * All fields except `description`, `inputSchema`, and `outputSchema` are
+ * required. `inputSchema` is effectively required for x402scan to classify
+ * the route as machine-invocable; omit only for purely human-facing pages.
  */
 export interface ProtectedRoute {
   /** URL path, must start with `/`. Used as Express route + OpenAPI key. */
@@ -82,26 +79,21 @@ export interface ProtectedRoute {
   /** Short operation title, surfaces in OpenAPI + Bazaar `info.name`. */
   summary: string;
   /** Longer human-readable description; used by OpenAPI + Bazaar. */
-  description: string;
-  /** Pricing metadata — currency + min/max band. */
+  description?: string;
+  /** Pricing metadata — fixed amount or dynamic min/max band. */
   pricing: RoutePricing;
   /**
-   * Zod validator applied to the buyer's `req.query` before quoting.
-   * Failures return 400 `INVALID_INPUT` with field-level details.
+   * JSON Schema for the request body / query input. Copied into
+   * `extensions.bazaar.info.inputSchema` on the 402 challenge and into the
+   * OpenAPI `requestBody`. Required for x402scan to mark the route as
+   * machine-invocable.
    */
-  inputValidator: z.ZodType<unknown>;
-  /**
-   * JSON Schema mirror of `inputValidator`. Copied into
-   * `extensions.bazaar.info.inputSchema` on the 402 challenge and
-   * rendered as `parameters: [{in: "query", ...}]` in the OpenAPI doc.
-   * Required for x402scan to classify the route as machine-invocable.
-   */
-  inputSchema: Record<string, unknown>;
+  inputSchema?: Record<string, unknown>;
   /**
    * JSON Schema for the success (200) response body. Copied into
    * `extensions.bazaar.info.outputSchema` and the OpenAPI `responses.200`.
    */
-  outputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
   /**
    * Express handler invoked **after** a successful x402 settlement. The
    * middleware has already validated the payment, broadcast the tx,
@@ -136,44 +128,33 @@ export function validateProtectedRoute(route: ProtectedRoute): void {
       `ProtectedRoute(${route.path}).summary must be a non-empty string`,
     );
   }
-  if (typeof route.description !== "string" || route.description.length === 0) {
-    throw new Error(
-      `ProtectedRoute(${route.path}).description must be a non-empty string`,
-    );
-  }
   if (typeof route.handler !== "function") {
     throw new Error(
       `ProtectedRoute(${route.path}).handler must be a function`,
     );
   }
-  if (typeof route.pricing.min !== "string" || route.pricing.min.length === 0) {
+  if (route.pricing.mode === "fixed") {
+    if (typeof route.pricing.amount !== "string" || route.pricing.amount.length === 0) {
+      throw new Error(
+        `ProtectedRoute(${route.path}).pricing.amount must be a non-empty string for fixed mode`,
+      );
+    }
+  } else if (route.pricing.mode === "dynamic") {
+    if (typeof route.pricing.min !== "string" || route.pricing.min.length === 0) {
+      throw new Error(
+        `ProtectedRoute(${route.path}).pricing.min must be a non-empty string for dynamic mode`,
+      );
+    }
+    if (typeof route.pricing.max !== "string" || route.pricing.max.length === 0) {
+      throw new Error(
+        `ProtectedRoute(${route.path}).pricing.max must be a non-empty string for dynamic mode`,
+      );
+    }
+  } else {
+    // Exhaustiveness check — TypeScript catches new modes at compile time;
+    // this branch handles plain-JS callers or runtime tampering.
     throw new Error(
-      `ProtectedRoute(${route.path}).pricing.min must be a non-empty string`,
-    );
-  }
-  if (typeof route.pricing.max !== "string" || route.pricing.max.length === 0) {
-    throw new Error(
-      `ProtectedRoute(${route.path}).pricing.max must be a non-empty string`,
-    );
-  }
-  if (route.pricing.currency !== "USD") {
-    throw new Error(
-      `ProtectedRoute(${route.path}).pricing.currency must be "USD"`,
-    );
-  }
-  if (route.inputValidator == null || typeof route.inputValidator.safeParse !== "function") {
-    throw new Error(
-      `ProtectedRoute(${route.path}).inputValidator must be a Zod schema`,
-    );
-  }
-  if (route.inputSchema == null || typeof route.inputSchema !== "object") {
-    throw new Error(
-      `ProtectedRoute(${route.path}).inputSchema must be a JSON Schema object`,
-    );
-  }
-  if (route.outputSchema == null || typeof route.outputSchema !== "object") {
-    throw new Error(
-      `ProtectedRoute(${route.path}).outputSchema must be a JSON Schema object`,
+      `ProtectedRoute(${route.path}).pricing.mode must be "fixed" or "dynamic"`,
     );
   }
 }
@@ -198,31 +179,6 @@ export function validateProtectedRoutes(routes: readonly ProtectedRoute[]): void
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Output schema for the swap route's 200 body
-// ═══════════════════════════════════════════════════════════════════════
-
-/**
- * JSON Schema for the 200 response body of `/api/swap`.
- *
- * The body is `{}` — empty, by design (D14 in implementation_plan.md). The
- * settlement receipt is carried in the `PAYMENT-RESPONSE` header's
- * `extensions.crossChain` field as a {@link CrossChainSettlementExtra},
- * which is the standardized x402 extensibility hook. Single source of
- * truth, consumable by any conforming x402 client without route-specific
- * knowledge.
- *
- * Phase 9 (`src/http/openapi.ts`) describes the `PAYMENT-RESPONSE` header
- * shape under the response's `headers` block.
- */
-const SWAP_BODY_SCHEMA: Record<string, unknown> = {
-  type: "object",
-  additionalProperties: false,
-  description:
-    "Empty body. The settlement receipt is carried in the PAYMENT-RESPONSE " +
-    "header's extensions.crossChain field (CrossChainSettlementExtra).",
-};
-
-// ═══════════════════════════════════════════════════════════════════════
 // The registry
 //
 // Add a new paid endpoint by appending a {@link ProtectedRoute} entry
@@ -231,28 +187,63 @@ const SWAP_BODY_SCHEMA: Record<string, unknown> = {
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
- * The live registry. A single swap route is the entire product surface
- * for this service.
+ * Default output schema for the demo `/api/premium` route — matches the
+ * shape returned by the handler in `server.ts`. Lives alongside the
+ * registry so OpenAPI and Bazaar consumers see the same source of truth.
+ */
+const PREMIUM_OUTPUT_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    message: { type: "string" },
+    timestamp: { type: "string", format: "date-time" },
+    merchant: { type: "string", description: "Merchant recipient on the destination chain." },
+    amountReceived: {
+      type: "string",
+      description: "Amount the merchant received on the destination chain, in smallest unit.",
+    },
+    destinationAsset: {
+      type: "string",
+      description: "1CS asset ID the merchant received (e.g. nep141:usdt.tether-token.near).",
+    },
+  },
+  required: ["message", "timestamp", "merchant", "amountReceived", "destinationAsset"],
+};
+
+/**
+ * The live registry. Currently seeded with the single demo resource;
+ * future paid routes are appended here. Handlers stay in this file so
+ * each entry is a single cohesive unit — the handler's shape obviously
+ * matches the `outputSchema` next to it.
  */
 export const PROTECTED_ROUTES: readonly ProtectedRoute[] = [
   {
-    path: "/api/swap",
+    path: "/api/premium",
     method: "GET",
-    summary: "Cross-chain swap",
+    summary: "Fetch the premium demo resource",
     description:
-      "Pay USDC on Base; receive any 1CS-supported asset on any 1CS-supported chain " +
-      "at a buyer-supplied address. Single signed authorisation, no wallet-connect dance. " +
-      "Buyer supplies destination params via query string (see inputSchema).",
-    pricing: { currency: "USD", min: "0.01", max: "100000" },
-    inputValidator: SwapRequestInputSchema,
-    inputSchema: SwapRequestInputJsonSchema,
-    outputSchema: SWAP_BODY_SCHEMA,
-    // Handler is attached at startup (see `buildSwapHandler` below) where
-    // it has access to `cfg`. The placeholder here throws loudly if anyone
-    // mounts the raw registry entry by mistake.
+      "Demo x402 resource. After a successful cross-chain settlement via 1Click " +
+      "Swap, returns a small JSON payload including the merchant destination and " +
+      "the amount received. Useful for smoke-testing the full 402 → sign → 200 flow.",
+    pricing: {
+      mode: "fixed",
+      currency: "USD",
+      // Indicative USD value; the actual origin-chain amount is computed
+      // per-request by the 1Click quote engine (it depends on live FX).
+      amount: "0.01",
+    },
+    // No input required — the route is a parameterless GET.
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    outputSchema: PREMIUM_OUTPUT_SCHEMA,
+    // Handler is attached at startup (see `buildPremiumHandler` below)
+    // where it has access to `cfg`. The placeholder here throws loudly
+    // if anyone mounts the raw registry entry by mistake.
     handler: (_req, _res, next) => next(new Error(
       "handler not bound — the registry entry must be cloned with a real handler at startup; " +
-      "see `buildSwapHandler` in src/http/protected-routes.ts",
+      "see `buildPremiumHandler` in src/http/protected-routes.ts",
     )),
   },
 ];
@@ -260,37 +251,27 @@ export const PROTECTED_ROUTES: readonly ProtectedRoute[] = [
 // ═══════════════════════════════════════════════════════════════════════
 // Handler factories
 //
-// Some handlers need access to config values at request time. Factories
-// expose the binding hook so `buildProtectedRoutes` can clone the
-// registry with concrete handlers.
+// Some handlers need access to config values at request time (e.g. the
+// merchant address to echo back). Rather than sprinkle closures through
+// the registry, we expose small factories here; server.ts calls them at
+// startup and replaces the placeholder handlers on cloned entries.
 // ═══════════════════════════════════════════════════════════════════════
 
-/**
- * Express request augmented by the x402 middleware with the SETTLED
- * `SwapState` (after the buyer's payment has been verified, broadcast,
- * and 1CS reports SUCCESS). The swap handler reads this to build the
- * receipt body.
- */
-export type RequestWithSwapState = Request & { swapState?: SwapState };
+import type { GatewayConfig } from "../infra/config.js";
 
 /**
- * Build the handler for `GET /api/swap`.
- *
- * The middleware has driven settlement to completion and attached the
- * SETTLED `SwapState` to `req.swapState` and the receipt-bearing
- * `PAYMENT-RESPONSE` header to the response by the time this runs. The
- * body is `{}` — the receipt lives in the header, not here.
- *
- * The `state` lookup is purely a sanity guard against middleware-routing
- * bugs; the handler does not consume it (the body is constant `{}`).
+ * Build the handler for `GET /api/premium`. Kept co-located with the
+ * route entry so the handler's shape obviously matches `outputSchema`.
  */
-export function buildSwapHandler(_cfg: GatewayConfig): RequestHandler {
-  return (req, res) => {
-    const state = (req as RequestWithSwapState).swapState;
-    if (!state) {
-      throw new Error("Swap state not attached to request — middleware bug");
-    }
-    res.json({});
+export function buildPremiumHandler(cfg: GatewayConfig): RequestHandler {
+  return (_req, res) => {
+    res.json({
+      message: "You've paid! Here is your premium content.",
+      timestamp: new Date().toISOString(),
+      merchant: cfg.merchantRecipient,
+      amountReceived: cfg.merchantAmountOut,
+      destinationAsset: cfg.merchantAssetOut,
+    });
   };
 }
 
@@ -305,9 +286,11 @@ export function buildSwapHandler(_cfg: GatewayConfig): RequestHandler {
 export function buildProtectedRoutes(cfg: GatewayConfig): ProtectedRoute[] {
   const bound: ProtectedRoute[] = PROTECTED_ROUTES.map((route) => {
     switch (route.path) {
-      case "/api/swap":
-        return { ...route, handler: buildSwapHandler(cfg) };
+      case "/api/premium":
+        return { ...route, handler: buildPremiumHandler(cfg) };
       default:
+        // New entries: bind their handler here, or leave as-is if the
+        // registry already carries a self-contained handler.
         return { ...route };
     }
   });

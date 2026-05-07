@@ -49,32 +49,7 @@ import {
   BUYER_ADDRESS,
   MOCK_DEPOSIT_ADDRESS,
   MOCK_TX_HASH,
-  mockSwapInputs,
-  mockProtectedRoute,
 } from "./mocks/index.js";
-import type { SwapRequestInput } from "./types.js";
-
-// ═══════════════════════════════════════════════════════════════════════
-// Swap query helpers
-// ═══════════════════════════════════════════════════════════════════════
-
-const SWAP_PATH = "/api/swap";
-const OTHER_PATH = "/api/other";
-
-function swapQuery(inputs: SwapRequestInput = mockSwapInputs()): Record<string, string> {
-  const out: Record<string, string> = {
-    destinationChain: inputs.destinationChain,
-    destinationAsset: inputs.destinationAsset,
-    destinationAddress: inputs.destinationAddress,
-    amountIn: inputs.amountIn,
-  };
-  if (inputs.refundAddress) out.refundAddress = inputs.refundAddress;
-  return out;
-}
-
-function getWithSwapQuery(app: express.Express, path: string): request.Test {
-  return request(app).get(path).query(swapQuery());
-}
 
 // ═══════════════════════════════════════════════════════════════════════
 // x402 client simulator
@@ -98,10 +73,8 @@ async function x402ClientFlow(
   paymentRequired: PaymentRequired;
   paymentResponse: request.Response;
 }> {
-  const query = swapQuery();
-
   // Step 1: Request without payment → 402
-  const initialResponse = await request(app).get(path).query(query);
+  const initialResponse = await request(app).get(path);
   expect(initialResponse.status).toBe(402);
   expect(initialResponse.headers["payment-required"]).toBeDefined();
 
@@ -131,11 +104,10 @@ async function x402ClientFlow(
     signedPayload = payload;
   }
 
-  // Step 5: Retry with payment (same query string preserves URL stability)
+  // Step 5: Retry with payment
   const encoded = encodePaymentSignatureHeader(signedPayload as any);
   const paymentResponse = await request(app)
     .get(path)
-    .query(query)
     .set("PAYMENT-SIGNATURE", encoded);
 
   return { initialResponse, paymentRequired, paymentResponse };
@@ -158,7 +130,6 @@ function buildDeps(overrides: Partial<MiddlewareDeps> = {}): MiddlewareDeps {
     depositNotifyFn: mockDepositNotifyFn(),
     statusPollFn: mockStatusPollFn(),
     quoteFn: createMockQuoteFn(),
-    route: mockProtectedRoute(),
     ...overrides,
   };
 }
@@ -167,20 +138,18 @@ function createTestApp(deps: MiddlewareDeps): express.Express {
   const app = express();
   app.use(express.json());
   app.get(
-    SWAP_PATH,
+    "/api/premium",
     createX402Middleware(deps),
     (_req, res) => {
-      // Body is `{}` by design (D14 — receipt is in the PAYMENT-RESPONSE header).
-      res.json({});
+      res.json({ content: "premium data", timestamp: Date.now() });
     },
   );
-  // Second route to test path isolation. Uses a separate middleware instance
-  // bound to its own ProtectedRoute (each route has its own input validator).
+  // Second route to test path isolation
   app.get(
-    OTHER_PATH,
-    createX402Middleware({ ...deps, route: mockProtectedRoute({ path: OTHER_PATH }) }),
+    "/api/other",
+    createX402Middleware(deps),
     (_req, res) => {
-      res.json({});
+      res.json({ content: "other data" });
     },
   );
   return app;
@@ -199,12 +168,12 @@ describe("E2E: Full x402 protocol compliance", () => {
       const app = createTestApp(deps);
 
       const { paymentRequired, paymentResponse } = await x402ClientFlow(
-        app, "/api/swap", buyerWallet, "eip3009",
+        app, "/api/premium", buyerWallet, "eip3009",
       );
 
       // Verify 200 response
       expect(paymentResponse.status).toBe(200);
-      expect(paymentResponse.body).toEqual({});
+      expect(paymentResponse.body.content).toBe("premium data");
 
       // Verify PAYMENT-RESPONSE header
       expect(paymentResponse.headers["payment-response"]).toBeDefined();
@@ -229,15 +198,15 @@ describe("E2E: Full x402 protocol compliance", () => {
       const deps = buildDeps({ resourceDescription: "Premium API data" });
       const app = createTestApp(deps);
 
-      const res = await getWithSwapQuery(app, SWAP_PATH);
+      const res = await request(app).get("/api/premium");
       const pr = decodePaymentRequiredHeader(res.headers["payment-required"]);
 
       // Protocol envelope
       expect(pr.x402Version).toBe(2);
       expect(pr.error).toBeUndefined();
 
-      // Resource info — Express's `originalUrl` includes the buyer's query string.
-      expect(pr.resource.url).toMatch(/^\/api\/swap\?/);
+      // Resource info
+      expect(pr.resource.url).toBe("/api/premium");
       expect(pr.resource.description).toBe("Premium API data");
 
       // Accepts array — single entry for v1
@@ -265,7 +234,7 @@ describe("E2E: Full x402 protocol compliance", () => {
       const app = createTestApp(deps);
 
       // First request gets 402 with permit2 method
-      const initialRes = await getWithSwapQuery(app, SWAP_PATH);
+      const initialRes = await request(app).get("/api/premium");
       expect(initialRes.status).toBe(402);
       const pr = decodePaymentRequiredHeader(initialRes.headers["payment-required"]);
       expect(pr.accepts[0]!.extra.assetTransferMethod).toBe("permit2");
@@ -279,11 +248,11 @@ describe("E2E: Full x402 protocol compliance", () => {
 
       const encoded = encodePaymentSignatureHeader(signedPayload as any);
       const paymentRes = await request(app)
-        .get("/api/swap")
+        .get("/api/premium")
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(paymentRes.status).toBe(200);
-      expect(paymentRes.body).toEqual({});
+      expect(paymentRes.body.content).toBe("premium data");
 
       const settleResponse = decodePaymentResponseHeader(
         paymentRes.headers["payment-response"],
@@ -301,7 +270,7 @@ describe("E2E: Full x402 protocol compliance", () => {
 
       // First flow: get 402, sign, settle → 200
       const { paymentResponse: firstResponse } = await x402ClientFlow(
-        app, "/api/swap", buyerWallet,
+        app, "/api/premium", buyerWallet,
       );
       expect(firstResponse.status).toBe(200);
 
@@ -315,7 +284,7 @@ describe("E2E: Full x402 protocol compliance", () => {
       const encoded = encodePaymentSignatureHeader(payload as any);
 
       const retryRes = await request(app)
-        .get("/api/swap")
+        .get("/api/premium")
         .set("PAYMENT-SIGNATURE", encoded);
 
       // Should return 200 with cached PAYMENT-RESPONSE
@@ -342,7 +311,7 @@ describe("E2E: Full x402 protocol compliance", () => {
       const app = createTestApp(deps);
 
       // Get 402
-      const initialRes = await getWithSwapQuery(app, SWAP_PATH);
+      const initialRes = await request(app).get("/api/premium");
       expect(initialRes.status).toBe(402);
 
       // Decode and sign
@@ -356,7 +325,7 @@ describe("E2E: Full x402 protocol compliance", () => {
       // Send payment → should fail at polling stage
       const encoded = encodePaymentSignatureHeader(signedPayload as any);
       const paymentRes = await request(app)
-        .get("/api/swap")
+        .get("/api/premium")
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(paymentRes.status).toBe(502);
@@ -381,7 +350,7 @@ describe("E2E: Full x402 protocol compliance", () => {
       });
       const app = createTestApp(deps);
 
-      const initialRes = await getWithSwapQuery(app, SWAP_PATH);
+      const initialRes = await request(app).get("/api/premium");
       const pr = decodePaymentRequiredHeader(initialRes.headers["payment-required"]);
       const accepted = pr.accepts[0]!;
       const { payload: signedPayload } = await signEIP3009Payload(buyerWallet, {
@@ -391,7 +360,7 @@ describe("E2E: Full x402 protocol compliance", () => {
 
       const encoded = encodePaymentSignatureHeader(signedPayload as any);
       const paymentRes = await request(app)
-        .get("/api/swap")
+        .get("/api/premium")
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(paymentRes.status).toBe(502);
@@ -414,7 +383,7 @@ describe("E2E: Full x402 protocol compliance", () => {
       });
       const app = createTestApp(deps);
 
-      const initialRes = await getWithSwapQuery(app, SWAP_PATH);
+      const initialRes = await request(app).get("/api/premium");
       const pr = decodePaymentRequiredHeader(initialRes.headers["payment-required"]);
       const accepted = pr.accepts[0]!;
       const { payload: signedPayload } = await signEIP3009Payload(buyerWallet, {
@@ -424,7 +393,7 @@ describe("E2E: Full x402 protocol compliance", () => {
 
       const encoded = encodePaymentSignatureHeader(signedPayload as any);
       const paymentRes = await request(app)
-        .get("/api/swap")
+        .get("/api/premium")
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(paymentRes.status).toBe(502);
@@ -443,7 +412,7 @@ describe("E2E: Full x402 protocol compliance", () => {
       });
       const app = createTestApp(deps);
 
-      const initialRes = await getWithSwapQuery(app, SWAP_PATH);
+      const initialRes = await request(app).get("/api/premium");
       const pr = decodePaymentRequiredHeader(initialRes.headers["payment-required"]);
       const accepted = pr.accepts[0]!;
       const { payload: signedPayload } = await signEIP3009Payload(buyerWallet, {
@@ -453,7 +422,7 @@ describe("E2E: Full x402 protocol compliance", () => {
 
       const encoded = encodePaymentSignatureHeader(signedPayload as any);
       const paymentRes = await request(app)
-        .get("/api/swap")
+        .get("/api/premium")
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(paymentRes.status).toBe(503);
@@ -472,7 +441,7 @@ describe("E2E: Full x402 protocol compliance", () => {
       });
       const app = createTestApp(deps);
 
-      const initialRes = await getWithSwapQuery(app, SWAP_PATH);
+      const initialRes = await request(app).get("/api/premium");
       const pr = decodePaymentRequiredHeader(initialRes.headers["payment-required"]);
       const accepted = pr.accepts[0]!;
       const { payload: signedPayload } = await signEIP3009Payload(buyerWallet, {
@@ -482,7 +451,7 @@ describe("E2E: Full x402 protocol compliance", () => {
 
       const encoded = encodePaymentSignatureHeader(signedPayload as any);
       const paymentRes = await request(app)
-        .get("/api/swap")
+        .get("/api/premium")
         .set("PAYMENT-SIGNATURE", encoded);
 
       expect(paymentRes.status).toBe(409);
@@ -504,7 +473,7 @@ describe("E2E: Full x402 protocol compliance", () => {
       const app = createTestApp(deps);
 
       // Get 402
-      const initialRes = await getWithSwapQuery(app, SWAP_PATH);
+      const initialRes = await request(app).get("/api/premium");
       const pr = decodePaymentRequiredHeader(initialRes.headers["payment-required"]);
       const accepted = pr.accepts[0]!;
 
@@ -517,7 +486,7 @@ describe("E2E: Full x402 protocol compliance", () => {
 
       const encoded = encodePaymentSignatureHeader(signedPayload as any);
       const paymentRes = await request(app)
-        .get("/api/swap")
+        .get("/api/premium")
         .set("PAYMENT-SIGNATURE", encoded);
 
       // Should get 402 with error explaining the amount is too low
@@ -536,7 +505,7 @@ describe("E2E: Full x402 protocol compliance", () => {
       });
       const app = createTestApp(deps);
 
-      const initialRes = await getWithSwapQuery(app, SWAP_PATH);
+      const initialRes = await request(app).get("/api/premium");
       const pr = decodePaymentRequiredHeader(initialRes.headers["payment-required"]);
       const accepted = pr.accepts[0]!;
       const { payload: signedPayload } = await signEIP3009Payload(buyerWallet, {
@@ -546,7 +515,7 @@ describe("E2E: Full x402 protocol compliance", () => {
 
       const encoded = encodePaymentSignatureHeader(signedPayload as any);
       const paymentRes = await request(app)
-        .get("/api/swap")
+        .get("/api/premium")
         .set("PAYMENT-SIGNATURE", encoded);
 
       // Should get 402 — verification fails due to balance check
@@ -565,7 +534,7 @@ describe("E2E: Full x402 protocol compliance", () => {
       const app = createTestApp(deps);
 
       // After 402: QUOTED
-      await getWithSwapQuery(app, SWAP_PATH);
+      await request(app).get("/api/premium");
       let state = await store.get(MOCK_DEPOSIT_ADDRESS);
       expect(state?.phase).toBe("QUOTED");
 
@@ -574,7 +543,7 @@ describe("E2E: Full x402 protocol compliance", () => {
         to: MOCK_DEPOSIT_ADDRESS,
       });
       const encoded = encodePaymentSignatureHeader(signedPayload as any);
-      await getWithSwapQuery(app, SWAP_PATH).set("PAYMENT-SIGNATURE", encoded);
+      await request(app).get("/api/premium").set("PAYMENT-SIGNATURE", encoded);
 
       state = await store.get(MOCK_DEPOSIT_ADDRESS);
       expect(state?.phase).toBe("SETTLED");
@@ -598,7 +567,7 @@ describe("E2E: Full x402 protocol compliance", () => {
       const app = createTestApp(deps);
 
       const { paymentResponse } = await x402ClientFlow(
-        app, "/api/swap", buyerWallet,
+        app, "/api/premium", buyerWallet,
       );
 
       // Should still succeed — deposit notification is non-fatal
@@ -617,8 +586,8 @@ describe("E2E: Full x402 protocol compliance", () => {
       const deps = buildDeps();
       const app = createTestApp(deps);
 
-      const res1 = await getWithSwapQuery(app, SWAP_PATH);
-      const res2 = await getWithSwapQuery(app, OTHER_PATH);
+      const res1 = await request(app).get("/api/premium");
+      const res2 = await request(app).get("/api/other");
 
       expect(res1.status).toBe(402);
       expect(res2.status).toBe(402);
@@ -626,9 +595,9 @@ describe("E2E: Full x402 protocol compliance", () => {
       const pr1 = decodePaymentRequiredHeader(res1.headers["payment-required"]);
       const pr2 = decodePaymentRequiredHeader(res2.headers["payment-required"]);
 
-      // Both should include the correct resource URL (with the buyer's query).
-      expect(pr1.resource.url).toMatch(/^\/api\/swap\?/);
-      expect(pr2.resource.url).toMatch(/^\/api\/other\?/);
+      // Both should include the correct resource URL
+      expect(pr1.resource.url).toBe("/api/premium");
+      expect(pr2.resource.url).toBe("/api/other");
     });
   });
 });

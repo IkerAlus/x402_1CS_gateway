@@ -24,7 +24,7 @@
 
 import { ethers } from "ethers";
 import type { GatewayConfig } from "../infra/config.js";
-import { configureOneClickSdk, applyOperatorMargin } from "./quote-engine.js";
+import { configureOneClickSdk } from "./quote-engine.js";
 import type { SettlementLimiter } from "../infra/rate-limiter.js";
 import type {
   StateStore,
@@ -202,12 +202,6 @@ export interface StatusPollResult {
     refundedAmount?: string;
     amountIn?: string;
     amountOut?: string;
-    /** Human-readable destination amount (e.g. `"9.985"`), when 1CS reports it. */
-    amountOutFormatted?: string;
-    /** USD value of the destination amount, when 1CS reports it. */
-    amountOutUsd?: string;
-    /** Realised slippage from 1CS, when available. */
-    slippage?: number;
   };
 }
 
@@ -411,7 +405,7 @@ export async function settlePayment(
   );
 
   console.log(
-    `[x402] ✅ Settled ${depositAddress} → 1CS status=${pollResult.status}, destChain=${extractDestinationChain(state.swapInputs.destinationAsset)}`,
+    `[x402] ✅ Settled ${depositAddress} → 1CS status=${pollResult.status}, destChain=${extractDestinationChain(cfg.merchantAssetOut)}`,
   );
 
   // ── 7. Finalize state ─────────────────────────────────────────────
@@ -493,16 +487,24 @@ export async function recoverSettlement(
 
     const pollResult = await pollUntilTerminal(addr, statusPollFn, store, cfg);
 
-    // Build a recovery-mode settlement response (no BroadcastResult available).
-    // Uses the same receipt builder as the happy path so the receipt shape
-    // doesn't drift between fresh settlements and recovered ones.
+    // Build a recovery-mode settlement response (no BroadcastResult available)
+    const extra: CrossChainSettlementExtra = {
+      settlementType: "crosschain-1cs",
+      destinationTxHashes: pollResult.swapDetails?.destinationChainTxHashes,
+      destinationChain: extractDestinationChain(cfg.merchantAssetOut),
+      destinationAmount: pollResult.swapDetails?.amountOut,
+      destinationAsset: cfg.merchantAssetOut,
+      swapStatus: pollResult.status,
+      correlationId: state.quoteResponse.correlationId,
+    };
+
     const response: SettlementResponseRecord = {
       success: true,
       payer: state.signerAddress,
       transaction: state.originTxHash ?? "unknown",
       network: cfg.originNetwork,
       amount: state.paymentRequirements.amount,
-      extra: buildCrossChainSettlementExtra(state, pollResult.swapDetails, pollResult.status),
+      extra,
     };
 
     await store.update(addr, {
@@ -794,9 +796,8 @@ export async function pollUntilTerminal(
 /**
  * Build the x402 `SettlementResponseRecord` from the broadcast and poll results.
  *
- * Returned in the `PAYMENT-RESPONSE` header as a JSON-encoded string. The
- * `extra` field carries the swap receipt (a {@link CrossChainSettlementExtra});
- * the response body itself is `{}`. See D14 in `implementation_plan.md`.
+ * This is returned in the `PAYMENT-RESPONSE` header as a JSON-encoded string.
+ * Includes cross-chain settlement metadata in the `extra` field.
  */
 export function buildSettlementResponse(
   state: SwapState,
@@ -804,71 +805,24 @@ export function buildSettlementResponse(
   pollResult: StatusPollResult,
   cfg: GatewayConfig,
 ): SettlementResponseRecord {
+  const extra: CrossChainSettlementExtra = {
+    settlementType: "crosschain-1cs",
+    destinationTxHashes: pollResult.swapDetails?.destinationChainTxHashes,
+    destinationChain: extractDestinationChain(cfg.merchantAssetOut),
+    destinationAmount: pollResult.swapDetails?.amountOut,
+    destinationAsset: cfg.merchantAssetOut,
+    swapStatus: pollResult.status,
+    correlationId: state.quoteResponse.correlationId,
+  };
+
   return {
     success: true,
     payer: state.signerAddress,
     transaction: broadcastResult.txHash,
     network: cfg.originNetwork,
     amount: state.paymentRequirements.amount,
-    extra: buildCrossChainSettlementExtra(state, pollResult.swapDetails, pollResult.status),
+    extra,
   };
-}
-
-/**
- * Assemble the `extensions.crossChain` payload (the swap receipt) for the
- * `PAYMENT-RESPONSE` header. The buyer's destination, the operator margin
- * snapshot, and any `swapDetails` fields 1CS surfaced (slippage, USD/formatted
- * amounts, destination tx hashes) all flow into one object here.
- *
- * Optional fields are omitted when their source is missing rather than
- * emitted as `undefined`, so the on-the-wire JSON stays tight and downstream
- * consumers can rely on key-presence semantics.
- *
- * Used by both {@link buildSettlementResponse} (the happy path) and
- * {@link recoverSettlement} (the post-restart recovery path) so the receipt
- * shape doesn't drift between them.
- */
-export function buildCrossChainSettlementExtra(
-  state: SwapState,
-  swapDetails: StatusPollResult["swapDetails"],
-  status: OneClickStatus,
-): CrossChainSettlementExtra {
-  const { marginAmount } = applyOperatorMargin(
-    state.quoteResponse.quote.amountIn,
-    state.operatorMarginBps,
-  );
-
-  const extra: CrossChainSettlementExtra = {
-    settlementType: "crosschain-1cs",
-    destinationChain: extractDestinationChain(state.swapInputs.destinationAsset),
-    destinationRecipient: state.swapInputs.destinationAddress,
-    destinationAsset: state.swapInputs.destinationAsset,
-    operatorFee: {
-      bps: state.operatorMarginBps,
-      amount: marginAmount,
-      currency: "USDC",
-    },
-    swapStatus: status,
-    correlationId: state.quoteResponse.correlationId,
-  };
-
-  if (swapDetails?.destinationChainTxHashes !== undefined) {
-    extra.destinationTxHashes = swapDetails.destinationChainTxHashes;
-  }
-  if (swapDetails?.amountOut !== undefined) {
-    extra.destinationAmount = swapDetails.amountOut;
-  }
-  if (swapDetails?.amountOutFormatted !== undefined) {
-    extra.destinationAmountFormatted = swapDetails.amountOutFormatted;
-  }
-  if (swapDetails?.amountOutUsd !== undefined) {
-    extra.destinationAmountUsd = swapDetails.amountOutUsd;
-  }
-  if (swapDetails?.slippage !== undefined) {
-    extra.slippage = swapDetails.slippage;
-  }
-
-  return extra;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1096,12 +1050,6 @@ export function createStatusPollFn(): StatusPollFn {
             amountIn: response.swapDetails.amountIn,
             // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             amountOut: response.swapDetails.amountOut,
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
-            amountOutFormatted: response.swapDetails.amountOutFormatted,
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
-            amountOutUsd: response.swapDetails.amountOutUsd,
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
-            slippage: response.swapDetails.slippage,
           }
         : undefined,
     };

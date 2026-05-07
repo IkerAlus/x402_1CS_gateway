@@ -35,38 +35,13 @@ export {
   defaultQuoteFn,
   configureOneClickSdk,
   buildQuoteDeadline,
-  buildSwapQuoteRequest,
-  applyOperatorMargin,
-  validateBuyerDestination,
+  buildQuoteRequest,
   validateDeadline,
   mapToPaymentRequirements,
   computeMaxTimeoutSeconds,
   toQuoteResponseRecord,
-  diagnoseQuoteRequest,
 } from "./payment/quote-engine.js";
-export type { BuildPaymentRequirementsResult, QuoteFn, QuoteRequestShape } from "./payment/quote-engine.js";
-
-// ── Protected Routes ────────────────────────────────────────────────
-export {
-  PROTECTED_ROUTES,
-  validateProtectedRoute,
-  validateProtectedRoutes,
-  buildProtectedRoutes,
-  buildSwapHandler,
-} from "./http/protected-routes.js";
-export type {
-  ProtectedRoute,
-  ProtectedMethod,
-  RoutePricing,
-  SwapPricing,
-  RequestWithSwapState,
-} from "./http/protected-routes.js";
-
-// ── Swap Input ──────────────────────────────────────────────────────
-export {
-  SwapRequestInputSchema,
-  SwapRequestInputJsonSchema,
-} from "./http/swap-input.js";
+export type { BuildPaymentRequirementsResult, QuoteFn } from "./payment/quote-engine.js";
 
 // ── Verifier ────────────────────────────────────────────────────────
 export {
@@ -82,7 +57,6 @@ export {
   settlePayment,
   pollUntilTerminal,
   buildSettlementResponse,
-  buildCrossChainSettlementExtra,
   extractDestinationChain,
   createBroadcastFn,
   createDepositNotifyFn,
